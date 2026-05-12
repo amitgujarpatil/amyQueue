@@ -1,0 +1,76 @@
+
+1/ raft is concensues algorithm
+2/ we need to raft to keep same information in all the availabel nodes.
+
+3/ leadership is raft.
+
+- only leader accepts the request and process it.
+- leader is reponsible for replecating data to followers.
+- at any point in time only one will be a leader
+
+4/ Server states 
+
+- 1 Leader 
+- many followers 
+- many candidates
+
+majority wins become leader.
+
+Note: we always start a cluster with odd number of nodes.
+where each node is an indpendent server.
+
+5/ Voting process triggers.
+
+when leader dies voting process start.
+
+- how do we know leader is die, by missing the heart beat from 
+  leader.
+
+[
+
+ quorum - minimum number of peoples before taking the offical desion.
+
+]
+
+desions regarding number of nodes in cluster.
+
+1/ static_mode start cluster with static number (ideally odd numbers)
+   - every node have information about the peer nodes, 
+     how they or if they are running on same host then on which port 
+     they needs to talk.
+
+2/ dyanmic_mode 
+   - nodes can join cluster without restarting the cluster.
+   - when node is up and running with the information about 
+     all peer nodes.
+   - rest of nodes also needs to update their peer nodes 
+     list with this new node. (still need to figure out how ?)
+
+3/ auto_mode 
+   - nodes can join cluster automatically and all peers nodes 
+     also update their list auto.     
+   - and new node can also participate in voting.
+
+Two types of nodes 
+
+
+
+
+everthing is going to be a perfect.
+i dont keep a track of what he knows or not.
+now its upon you.
+no its ok, i got it.
+take a moment.
+
+
+kraft for election prcess.
+what we called it is concensues algorithm.
+
+3 controller nodes. -<> manage  
+3 workers nodes 
+
+
+
+
+
+
