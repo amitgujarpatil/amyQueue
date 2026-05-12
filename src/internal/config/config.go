@@ -17,15 +17,17 @@ const (
 )
 
 type Config struct {
-	NodeRole       NodeRole
-	ControllerHost string
-	ControllerPort int
-	PeerNodes      []string // addresses of all peer nodes e.g. ["localhost:9092", "localhost:9093"]
-	NodeID         string
-	HTTPPort       int
-	GRPCPort       int
-	RaftPort       int
-	LogLevel       string
+	NodeRole              NodeRole
+	ControllerHost        string
+	ControllerPort        int
+	PeerNodes             []string // addresses of all peer nodes e.g. ["localhost:9092", "localhost:9093"]
+	NodeID                string
+	HTTPPort              int
+	GRPCPort              int
+	RaftPort              int
+	RaftElectionTimeoutMs int
+	RaftHeartbeatMs       int
+	LogLevel              string
 }
 
 // Load reads .env file (if present) then overlays actual environment variables.
@@ -72,6 +74,16 @@ func Load(envFile string) (*Config, error) {
 	cfg.RaftPort, err = getEnvInt("RAFT_PORT", 8081)
 	if err != nil {
 		return nil, fmt.Errorf("RAFT_PORT: %w", err)
+	}
+
+	cfg.RaftElectionTimeoutMs, err = getEnvInt("RAFT_ELECTION_TIMEOUT_MS", 1000)
+	if err != nil {
+		return nil, fmt.Errorf("RAFT_ELECTION_TIMEOUT_MS: %w", err)
+	}
+
+	cfg.RaftHeartbeatMs, err = getEnvInt("RAFT_HEARTBEAT_INTERVAL_MS", 100)
+	if err != nil {
+		return nil, fmt.Errorf("RAFT_HEARTBEAT_INTERVAL_MS: %w", err)
 	}
 
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")

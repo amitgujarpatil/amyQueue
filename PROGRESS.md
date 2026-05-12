@@ -49,7 +49,68 @@ NODE_ROLE=broker CONTROLLER_HOST=localhost PEER_NODES="localhost:9092,localhost:
 
 ---
 
+---
+
+## 3. Raft consensus engine — leader election + transport abstraction
+
+**What:** Built a full Raft implementation for controller nodes:
+
+- `src/internal/raft/messages.go` — wire message types (`VoteRequest`, `VoteResponse`, `AppendEntriesRequest`, `AppendEntriesResponse`). Transport-agnostic structs.
+- `src/internal/raft/log.go` — append-only in-memory log with sentinel at index 0, thread-safe, supports append/truncate on conflict.
+- `src/internal/raft/transport.go` — `Transport` interface (the swap-out seam) + `Handlers` callback struct. Core never touches the wire.
+- `src/internal/raft/node.go` — full state machine: Follower → Candidate → Leader loops, randomised election timeout, vote collection with quorum check, heartbeat broadcast, log replication, commit index advancement, split-brain protection via term comparison.
+- `src/internal/raft/tcp/transport.go` — TCP implementation of `Transport`. Each RPC is: dial → gob-encode request → gob-decode response → close. Simple and correct for a 3-5 node cluster.
+
+**Why transport interface:** Replacing TCP with gRPC, HTTP, or a custom binary protocol only requires implementing `Transport`. The `node.go` business logic is never touched. This was the core design goal.
+
+**Split-brain / network partition handling:**
+- Any node that receives a message with `term > currentTerm` immediately steps down to follower. This prevents two nodes believing they are leader at the same time.
+- Leader must receive responses from a quorum of peers before advancing `commitIndex`. A partitioned leader that can't reach a majority stops committing — it does not serve stale writes.
+- Randomised election timeout (base to base×1.5) ensures split votes resolve quickly without coordination.
+
+**Key env vars added:**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RAFT_ELECTION_TIMEOUT_MS` | `1000` | Base election timeout (actual is randomised up to +50%) |
+| `RAFT_HEARTBEAT_INTERVAL_MS` | `100` | How often leader sends heartbeats |
+
+**How to run a 3-node controller cluster (copy-paste ready):**
+
+Terminal 1 — controller-1:
+```bash
+NODE_ROLE=controller NODE_ID=ctrl-1 RAFT_PORT=7001 \
+  PEER_NODES="localhost:7002,localhost:7003" \
+  RAFT_ELECTION_TIMEOUT_MS=1000 RAFT_HEARTBEAT_INTERVAL_MS=100 \
+  LOG_LEVEL=info \
+  go run ./src/cmd/controller
+```
+
+Terminal 2 — controller-2:
+```bash
+NODE_ROLE=controller NODE_ID=ctrl-2 RAFT_PORT=7002 \
+  PEER_NODES="localhost:7001,localhost:7003" \
+  RAFT_ELECTION_TIMEOUT_MS=1000 RAFT_HEARTBEAT_INTERVAL_MS=100 \
+  LOG_LEVEL=info \
+  go run ./src/cmd/controller
+```
+
+Terminal 3 — controller-3:
+```bash
+NODE_ROLE=controller NODE_ID=ctrl-3 RAFT_PORT=7003 \
+  PEER_NODES="localhost:7001,localhost:7002" \
+  RAFT_ELECTION_TIMEOUT_MS=1000 RAFT_HEARTBEAT_INTERVAL_MS=100 \
+  LOG_LEVEL=info \
+  go run ./src/cmd/controller
+```
+
+Kill any controller to watch re-election happen automatically.
+
+**Key files:** `src/internal/raft/node.go`, `src/internal/raft/transport.go`, `src/internal/raft/tcp/transport.go`, `src/internal/raft/messages.go`, `src/internal/raft/log.go`
+
+---
+
 ## What's next
-- Phase 2: Broker registers itself with the controller on startup (HTTP or gRPC call)
-- Phase 2: Controller tracks which brokers are alive (in-memory map to start)
-- Phase 3: Raft election between controller nodes
+- Add gRPC transport (implement `raft.Transport` interface, drop in as replacement for TCP)
+- Broker registration: broker connects to controller leader on startup
+- Controller tracks live brokers in-memory, detects failures via missed heartbeats

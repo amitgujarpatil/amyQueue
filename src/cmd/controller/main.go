@@ -2,9 +2,14 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/yourusername/amyqueue/src/internal/config"
+	"github.com/yourusername/amyqueue/src/internal/raft"
+	"github.com/yourusername/amyqueue/src/internal/raft/tcp"
 )
 
 var (
@@ -21,21 +26,50 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Node ID      : %s\n", cfg.NodeID)
-	fmt.Printf("Role         : %s\n", cfg.NodeRole)
-	fmt.Printf("Peer nodes   : %v\n", cfg.PeerNodes)
-	fmt.Printf("HTTP port    : %d\n", cfg.HTTPPort)
-	fmt.Printf("gRPC port    : %d\n", cfg.GRPCPort)
-	fmt.Printf("Raft port    : %d\n", cfg.RaftPort)
-	fmt.Printf("Log level    : %s\n", cfg.LogLevel)
-	fmt.Println()
-	fmt.Println("Starting controller node...")
+	logger := buildLogger(cfg.LogLevel)
 
-	// TODO: Phase 2 - Raft node initialization
-	// TODO: Phase 3 - Metadata state machine
-	// TODO: Phase 4 - gRPC server setup
-	// TODO: Phase 5 - HTTP API server
-	// TODO: Phase 6 - Signal handling and graceful shutdown
+	logger.Info("controller starting",
+		"node_id", cfg.NodeID,
+		"role", cfg.NodeRole,
+		"raft_port", cfg.RaftPort,
+		"peers", cfg.PeerNodes,
+	)
 
-	os.Exit(0)
+	listenAddr := fmt.Sprintf(":%d", cfg.RaftPort)
+	transport := tcp.New(listenAddr)
+
+	node := raft.NewNode(raft.Config{
+		ID:                cfg.NodeID,
+		Peers:             cfg.PeerNodes,
+		ElectionTimeoutMs: cfg.RaftElectionTimeoutMs,
+		HeartbeatMs:       cfg.RaftHeartbeatMs,
+	}, transport, logger)
+
+	if err := node.Start(); err != nil {
+		logger.Error("failed to start raft node", "err", err)
+		os.Exit(1)
+	}
+
+	// wait for SIGINT / SIGTERM
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+
+	logger.Info("shutting down")
+	node.Stop()
+}
+
+func buildLogger(level string) *slog.Logger {
+	var l slog.Level
+	switch level {
+	case "debug":
+		l = slog.LevelDebug
+	case "warn":
+		l = slog.LevelWarn
+	case "error":
+		l = slog.LevelError
+	default:
+		l = slog.LevelInfo
+	}
+	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: l}))
 }
