@@ -15,6 +15,7 @@ const (
 	tagVoteRequest   byte = 1
 	tagAppendEntries byte = 3
 	tagObserverJoin  byte = 5
+	tagClusterInfo   byte = 7
 )
 
 // Transport implements raft.Transport using the generic TCP server/client from
@@ -79,6 +80,24 @@ func (t *Transport) SendObserverJoin(ctx context.Context, addr string, req raft.
 	return resp, dec.Decode(&resp)
 }
 
+func (t *Transport) SendClusterInfo(ctx context.Context, addr string, req raft.ClusterInfoRequest) (raft.ClusterInfoResponse, error) {
+	conn, err := tcputil.Dial(ctx, addr)
+	if err != nil {
+		return raft.ClusterInfoResponse{}, err
+	}
+	defer conn.Close()
+
+	enc, dec := gob.NewEncoder(conn), gob.NewDecoder(conn)
+	if err := enc.Encode(tagClusterInfo); err != nil {
+		return raft.ClusterInfoResponse{}, err
+	}
+	if err := enc.Encode(req); err != nil {
+		return raft.ClusterInfoResponse{}, err
+	}
+	var resp raft.ClusterInfoResponse
+	return resp, dec.Decode(&resp)
+}
+
 func (t *Transport) SendAppendEntries(ctx context.Context, addr string, req raft.AppendEntriesRequest) (raft.AppendEntriesResponse, error) {
 	conn, err := tcputil.Dial(ctx, addr)
 	if err != nil {
@@ -134,6 +153,13 @@ func connHandler(h raft.Handlers) tcputil.ConnHandler {
 				return
 			}
 			_ = enc.Encode(h.HandleObserverJoin(req))
+
+		case tagClusterInfo:
+			var req raft.ClusterInfoRequest
+			if err := dec.Decode(&req); err != nil {
+				return
+			}
+			_ = enc.Encode(h.HandleClusterInfo(req))
 		}
 	}
 }

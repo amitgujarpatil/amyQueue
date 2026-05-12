@@ -63,10 +63,22 @@ type VoteResponse struct {
 type AppendEntriesRequest struct {
 	Term         uint64
 	LeaderID     string
+	LeaderAddr   string // raft listen address of the leader — lets followers answer redirects
 	PrevLogIndex uint64
 	PrevLogTerm  uint64
 	Entries      []LogEntry
 	LeaderCommit uint64
+}
+
+// ClusterInfoRequest can be sent to ANY node. It returns the current leader
+// address and the full member list. Used by new nodes for bootstrap discovery —
+// they don't know who the leader is yet, so they ask any seed and get directed.
+type ClusterInfoRequest struct{}
+
+type ClusterInfoResponse struct {
+	LeaderID   string
+	LeaderAddr string // raft address of the current leader (empty if no leader known yet)
+	Members    []Member
 }
 
 type AppendEntriesResponse struct {

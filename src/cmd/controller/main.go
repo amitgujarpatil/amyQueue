@@ -49,8 +49,11 @@ func main() {
 	raftListenAddr := fmt.Sprintf(":%d", cfg.RaftPort)
 	transport := tcp.New(raftListenAddr)
 
+	selfRaftAddr := fmt.Sprintf("localhost:%d", cfg.RaftPort)
+
 	node := raft.NewNode(raft.Config{
 		ID:                cfg.NodeID,
+		Addr:              selfRaftAddr,
 		Peers:             cfg.PeerNodes,
 		Mode:              raft.ClusterMode(cfg.ClusterMode),
 		ElectionTimeoutMs: cfg.RaftElectionTimeoutMs,
@@ -63,8 +66,8 @@ func main() {
 	}
 
 	// dynamic mode: join an existing cluster as observer before doing anything else
-	if cfg.ClusterMode == "dynamic" && cfg.JoinAddr != "" {
-		if err := joinCluster(cfg, transport, logger); err != nil {
+	if cfg.ClusterMode == "dynamic" && len(cfg.BootstrapServers) > 0 {
+		if err := joinCluster(cfg, selfRaftAddr, transport, logger); err != nil {
 			logger.Error("failed to join cluster", "err", err)
 			node.Stop()
 			os.Exit(1)
@@ -90,41 +93,76 @@ func main() {
 	node.Stop()
 }
 
-// joinCluster sends an ObserverJoin request to the existing cluster.
-// The node starts as observer and can later be promoted to voter via the admin API.
-func joinCluster(cfg *config.Config, transport *tcp.Transport, logger *slog.Logger) error {
-	selfRaftAddr := fmt.Sprintf("localhost:%d", cfg.RaftPort)
+// joinCluster discovers the current leader from bootstrap servers and registers
+// this node as an observer.
+//
+// Algorithm:
+//  1. Try each bootstrap server in order — call ClusterInfo (any node answers)
+//  2. From the response, extract the leader address
+//  3. If no leader known yet, retry the next seed
+//  4. Once leader is found, call ObserverJoin directly on the leader
+//  5. If the leader redirects (it stepped down mid-flight), follow the redirect once
+func joinCluster(cfg *config.Config, selfRaftAddr string, transport *tcp.Transport, logger *slog.Logger) error {
 	req := raft.ObserverJoinRequest{
 		NodeID: cfg.NodeID,
 		Addr:   selfRaftAddr,
 	}
 
+	leaderAddr := discoverLeader(cfg.BootstrapServers, transport, logger)
+	if leaderAddr == "" {
+		return fmt.Errorf("could not discover leader from bootstrap servers %v", cfg.BootstrapServers)
+	}
+
+	logger.Info("leader discovered, sending observer join", "leader_addr", leaderAddr)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := transport.SendObserverJoin(ctx, cfg.JoinAddr, req)
+	resp, err := transport.SendObserverJoin(ctx, leaderAddr, req)
 	if err != nil {
-		return fmt.Errorf("observer join RPC failed: %w", err)
+		return fmt.Errorf("observer join failed: %w", err)
 	}
 	if !resp.Success {
-		if resp.LeaderAddr != "" {
-			// redirected — try the actual leader
+		// leader may have changed mid-flight — follow the redirect once
+		if resp.LeaderAddr != "" && resp.LeaderAddr != leaderAddr {
+			logger.Info("redirected to new leader", "new_leader", resp.LeaderAddr)
 			ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel2()
 			resp2, err2 := transport.SendObserverJoin(ctx2, resp.LeaderAddr, req)
 			if err2 != nil {
-				return fmt.Errorf("observer join redirect failed: %w", err2)
+				return fmt.Errorf("observer join after redirect failed: %w", err2)
 			}
 			if !resp2.Success {
-				return fmt.Errorf("observer join rejected: %s", resp2.Err)
+				return fmt.Errorf("observer join rejected after redirect: %s", resp2.Err)
 			}
-		} else {
-			return fmt.Errorf("observer join rejected: %s", resp.Err)
+			logger.Info("joined cluster as observer", "via_leader", resp.LeaderAddr)
+			return nil
 		}
+		return fmt.Errorf("observer join rejected: %s", resp.Err)
 	}
 
-	logger.Info("joined cluster as observer", "via", cfg.JoinAddr)
+	logger.Info("joined cluster as observer", "via_leader", leaderAddr)
 	return nil
+}
+
+// discoverLeader asks each bootstrap server for cluster info and returns the
+// leader's raft address. Tries all seeds before giving up.
+func discoverLeader(seeds []string, transport *tcp.Transport, logger *slog.Logger) string {
+	for _, seed := range seeds {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		info, err := transport.SendClusterInfo(ctx, seed, raft.ClusterInfoRequest{})
+		cancel()
+		if err != nil {
+			logger.Warn("bootstrap seed unreachable", "seed", seed, "err", err)
+			continue
+		}
+		if info.LeaderAddr != "" {
+			logger.Info("cluster info received", "seed", seed, "leader_id", info.LeaderID, "leader_addr", info.LeaderAddr)
+			return info.LeaderAddr
+		}
+		logger.Warn("seed has no leader yet", "seed", seed)
+	}
+	return ""
 }
 
 // killPort frees any process listening on the given TCP port.

@@ -19,6 +19,10 @@ type Transport interface {
 	// SendObserverJoin is called by a new node to register itself with the leader.
 	SendObserverJoin(ctx context.Context, addr string, req ObserverJoinRequest) (ObserverJoinResponse, error)
 
+	// SendClusterInfo asks any node for the current leader address and member list.
+	// Used during bootstrap — the caller doesn't know the leader yet.
+	SendClusterInfo(ctx context.Context, addr string, req ClusterInfoRequest) (ClusterInfoResponse, error)
+
 	// Close shuts down the transport.
 	Close() error
 }
@@ -29,4 +33,5 @@ type Handlers struct {
 	HandleVoteRequest   func(req VoteRequest) VoteResponse
 	HandleAppendEntries func(req AppendEntriesRequest) AppendEntriesResponse
 	HandleObserverJoin  func(req ObserverJoinRequest) ObserverJoinResponse
+	HandleClusterInfo   func(req ClusterInfoRequest) ClusterInfoResponse
 }

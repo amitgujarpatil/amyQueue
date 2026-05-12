@@ -29,8 +29,8 @@ type Config struct {
 	RaftHeartbeatMs       int
 	LogLevel              string
 	KillPortOnStart       bool   // dev convenience: free the port before binding (default true)
-	ClusterMode           string // "static" (default) or "dynamic"
-	JoinAddr              string // dynamic mode only: raft addr of any existing cluster node to join via
+	ClusterMode      string   // "static" (default) or "dynamic"
+	BootstrapServers []string // dynamic mode: 1+ seed raft addresses, tried in order until leader found
 }
 
 // Load reads .env file (if present) then overlays actual environment variables.
@@ -96,7 +96,8 @@ func Load(envFile string) (*Config, error) {
 	if cfg.ClusterMode != "static" && cfg.ClusterMode != "dynamic" {
 		return nil, fmt.Errorf("CLUSTER_MODE must be 'static' or 'dynamic', got %q", cfg.ClusterMode)
 	}
-	cfg.JoinAddr = getEnv("JOIN_ADDR", "")
+	// BOOTSTRAP_SERVERS accepts the same comma-separated format as PEER_NODES
+	cfg.BootstrapServers = parsePeerNodes(getEnv("BOOTSTRAP_SERVERS", ""))
 
 	return cfg, nil
 }

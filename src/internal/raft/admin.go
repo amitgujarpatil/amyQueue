@@ -26,7 +26,8 @@ type AdminService interface {
 }
 
 type ClusterStatusResponse struct {
-	LeaderID string
-	Term     uint64
-	Members  []Member
+	LeaderID   string
+	LeaderAddr string
+	Term       uint64
+	Members    []Member
 }

@@ -34,6 +34,7 @@ func (s State) String() string {
 // Config holds the tunable knobs for a Raft node.
 type Config struct {
 	ID                string
+	Addr              string      // this node's own raft listen address (e.g. "localhost:7001")
 	Peers             []string    // initial voter addresses (static mode); ignored in dynamic mode after bootstrap
 	Mode              ClusterMode // static or dynamic
 	ElectionTimeoutMs int
@@ -61,6 +62,7 @@ type Node struct {
 	commitIndex uint64
 	lastApplied uint64
 	leaderID    string
+	leaderAddr  string // raft listen address of the current leader — used for redirect hints
 
 	// leader only: next log index to send to each peer addr
 	nextIndex  map[string]uint64
@@ -108,6 +110,7 @@ func (n *Node) Start() error {
 		HandleVoteRequest:   n.handleVoteRequest,
 		HandleAppendEntries: n.handleAppendEntries,
 		HandleObserverJoin:  n.JoinAsObserver,
+		HandleClusterInfo:   n.handleClusterInfo,
 	}
 	if err := n.transport.Start(handlers); err != nil {
 		return err
@@ -143,9 +146,22 @@ func (n *Node) ClusterStatus() ClusterStatusResponse {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return ClusterStatusResponse{
-		LeaderID: n.leaderID,
-		Term:     n.currentTerm,
-		Members:  n.voters.Members(),
+		LeaderID:   n.leaderID,
+		LeaderAddr: n.leaderAddr,
+		Term:       n.currentTerm,
+		Members:    n.voters.Members(),
+	}
+}
+
+// handleClusterInfo answers bootstrap discovery requests from any node.
+// Safe to call on any node — it returns whatever this node knows right now.
+func (n *Node) handleClusterInfo(_ ClusterInfoRequest) ClusterInfoResponse {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return ClusterInfoResponse{
+		LeaderID:   n.leaderID,
+		LeaderAddr: n.leaderAddr,
+		Members:    n.voters.Members(),
 	}
 }
 
@@ -158,7 +174,9 @@ func (n *Node) JoinAsObserver(req ObserverJoinRequest) ObserverJoinResponse {
 	n.mu.Unlock()
 
 	if state != Leader {
-		leaderAddr := n.voters.addrOf(leaderID)
+		n.mu.Lock()
+		leaderAddr := n.leaderAddr
+		n.mu.Unlock()
 		return ObserverJoinResponse{
 			LeaderID:   leaderID,
 			LeaderAddr: leaderAddr,
@@ -427,6 +445,7 @@ func (n *Node) becomeLeader() {
 	n.mu.Lock()
 	n.state = Leader
 	n.leaderID = n.cfg.ID
+	n.leaderAddr = n.cfg.Addr
 	nextIdx := n.log.lastIndex() + 1
 	for _, addr := range n.voters.Voters(n.cfg.ID) {
 		n.nextIndex[addr] = nextIdx
@@ -434,7 +453,7 @@ func (n *Node) becomeLeader() {
 	}
 	term := n.currentTerm
 	n.mu.Unlock()
-	n.logger.Info("became leader", "term", term)
+	n.logger.Info("became leader", "term", term, "addr", n.cfg.Addr)
 }
 
 // ─── leader ───────────────────────────────────────────────────────────────────
@@ -464,6 +483,7 @@ func (n *Node) broadcastHeartbeat() {
 	n.mu.Lock()
 	term := n.currentTerm
 	leaderID := n.cfg.ID
+	leaderAddr := n.cfg.Addr
 	commitIndex := n.commitIndex
 	n.mu.Unlock()
 
@@ -486,6 +506,7 @@ func (n *Node) broadcastHeartbeat() {
 			req := AppendEntriesRequest{
 				Term:         term,
 				LeaderID:     leaderID,
+				LeaderAddr:   leaderAddr,
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm:  prevLogEntry.Term,
 				Entries:      n.log.entriesFrom(nextIdx),
@@ -625,6 +646,7 @@ func (n *Node) handleAppendEntries(req AppendEntriesRequest) AppendEntriesRespon
 	}
 	n.state = Follower
 	n.leaderID = req.LeaderID
+	n.leaderAddr = req.LeaderAddr
 
 	select {
 	case n.heartbeatC <- struct{}{}:
