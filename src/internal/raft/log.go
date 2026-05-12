@@ -3,9 +3,10 @@ package raft
 import "sync"
 
 type LogEntry struct {
-	Index   uint64
-	Term    uint64
-	Command []byte
+	Index       uint64
+	Term        uint64
+	Type        CommandType // CmdData or CmdMembership
+	Command     []byte
 }
 
 type Log struct {

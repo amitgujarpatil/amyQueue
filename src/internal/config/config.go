@@ -28,7 +28,9 @@ type Config struct {
 	RaftElectionTimeoutMs int
 	RaftHeartbeatMs       int
 	LogLevel              string
-	KillPortOnStart       bool // dev convenience: free the port before binding (default true)
+	KillPortOnStart       bool   // dev convenience: free the port before binding (default true)
+	ClusterMode           string // "static" (default) or "dynamic"
+	JoinAddr              string // dynamic mode only: raft addr of any existing cluster node to join via
 }
 
 // Load reads .env file (if present) then overlays actual environment variables.
@@ -89,6 +91,12 @@ func Load(envFile string) (*Config, error) {
 
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
 	cfg.KillPortOnStart = getEnvBool("KILL_PORT_ON_START", true)
+
+	cfg.ClusterMode = getEnv("CLUSTER_MODE", "static")
+	if cfg.ClusterMode != "static" && cfg.ClusterMode != "dynamic" {
+		return nil, fmt.Errorf("CLUSTER_MODE must be 'static' or 'dynamic', got %q", cfg.ClusterMode)
+	}
+	cfg.JoinAddr = getEnv("JOIN_ADDR", "")
 
 	return cfg, nil
 }

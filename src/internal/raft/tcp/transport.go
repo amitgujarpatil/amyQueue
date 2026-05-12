@@ -14,6 +14,7 @@ import (
 const (
 	tagVoteRequest   byte = 1
 	tagAppendEntries byte = 3
+	tagObserverJoin  byte = 5
 )
 
 // Transport implements raft.Transport using the generic TCP server/client from
@@ -57,6 +58,24 @@ func (t *Transport) SendVoteRequest(ctx context.Context, addr string, req raft.V
 		return raft.VoteResponse{}, err
 	}
 	var resp raft.VoteResponse
+	return resp, dec.Decode(&resp)
+}
+
+func (t *Transport) SendObserverJoin(ctx context.Context, addr string, req raft.ObserverJoinRequest) (raft.ObserverJoinResponse, error) {
+	conn, err := tcputil.Dial(ctx, addr)
+	if err != nil {
+		return raft.ObserverJoinResponse{}, err
+	}
+	defer conn.Close()
+
+	enc, dec := gob.NewEncoder(conn), gob.NewDecoder(conn)
+	if err := enc.Encode(tagObserverJoin); err != nil {
+		return raft.ObserverJoinResponse{}, err
+	}
+	if err := enc.Encode(req); err != nil {
+		return raft.ObserverJoinResponse{}, err
+	}
+	var resp raft.ObserverJoinResponse
 	return resp, dec.Decode(&resp)
 }
 
@@ -108,6 +127,13 @@ func connHandler(h raft.Handlers) tcputil.ConnHandler {
 				return
 			}
 			_ = enc.Encode(h.HandleAppendEntries(req))
+
+		case tagObserverJoin:
+			var req raft.ObserverJoinRequest
+			if err := dec.Decode(&req); err != nil {
+				return
+			}
+			_ = enc.Encode(h.HandleObserverJoin(req))
 		}
 	}
 }

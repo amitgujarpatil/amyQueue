@@ -16,6 +16,9 @@ type Transport interface {
 	// Entries is empty) to the peer at addr.
 	SendAppendEntries(ctx context.Context, addr string, req AppendEntriesRequest) (AppendEntriesResponse, error)
 
+	// SendObserverJoin is called by a new node to register itself with the leader.
+	SendObserverJoin(ctx context.Context, addr string, req ObserverJoinRequest) (ObserverJoinResponse, error)
+
 	// Close shuts down the transport.
 	Close() error
 }
@@ -23,6 +26,7 @@ type Transport interface {
 // Handlers is the callback surface the transport calls when an inbound RPC arrives.
 // The node registers these so business logic stays in node.go.
 type Handlers struct {
-	HandleVoteRequest     func(req VoteRequest) VoteResponse
-	HandleAppendEntries   func(req AppendEntriesRequest) AppendEntriesResponse
+	HandleVoteRequest   func(req VoteRequest) VoteResponse
+	HandleAppendEntries func(req AppendEntriesRequest) AppendEntriesResponse
+	HandleObserverJoin  func(req ObserverJoinRequest) ObserverJoinResponse
 }
