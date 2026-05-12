@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/yourusername/amyqueue/src/internal/config"
@@ -35,6 +38,10 @@ func main() {
 		"peers", cfg.PeerNodes,
 	)
 
+	if cfg.KillPortOnStart {
+		killPort(cfg.RaftPort, logger)
+	}
+
 	listenAddr := fmt.Sprintf(":%d", cfg.RaftPort)
 	transport := tcp.New(listenAddr)
 
@@ -57,6 +64,43 @@ func main() {
 
 	logger.Info("shutting down")
 	node.Stop()
+}
+
+// killPort frees any process listening on the given TCP port.
+// macOS uses lsof; Linux uses fuser. Failures are logged but never fatal —
+// this is a dev convenience, not a hard requirement.
+func killPort(port int, logger *slog.Logger) {
+	portStr := fmt.Sprintf("%d", port)
+	var pids []string
+
+	switch runtime.GOOS {
+	case "darwin":
+		out, err := exec.Command("lsof", "-ti", fmt.Sprintf("TCP:%s", portStr)).Output()
+		if err != nil || len(out) == 0 {
+			return
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if pid := strings.TrimSpace(line); pid != "" {
+				pids = append(pids, pid)
+			}
+		}
+	default: // linux
+		out, err := exec.Command("fuser", portStr+"/tcp").Output()
+		if err != nil || len(out) == 0 {
+			return
+		}
+		for _, pid := range strings.Fields(string(out)) {
+			pids = append(pids, strings.TrimSpace(pid))
+		}
+	}
+
+	for _, pid := range pids {
+		if err := exec.Command("kill", "-9", pid).Run(); err != nil {
+			logger.Warn("could not kill process on port", "port", port, "pid", pid, "err", err)
+		} else {
+			logger.Info("killed process occupying port", "port", port, "pid", pid)
+		}
+	}
 }
 
 func buildLogger(level string) *slog.Logger {

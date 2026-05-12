@@ -28,6 +28,7 @@ type Config struct {
 	RaftElectionTimeoutMs int
 	RaftHeartbeatMs       int
 	LogLevel              string
+	KillPortOnStart       bool // dev convenience: free the port before binding (default true)
 }
 
 // Load reads .env file (if present) then overlays actual environment variables.
@@ -87,6 +88,7 @@ func Load(envFile string) (*Config, error) {
 	}
 
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
+	cfg.KillPortOnStart = getEnvBool("KILL_PORT_ON_START", true)
 
 	return cfg, nil
 }
@@ -112,6 +114,19 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	v, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "false", "0", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 func getEnvInt(key string, fallback int) (int, error) {
