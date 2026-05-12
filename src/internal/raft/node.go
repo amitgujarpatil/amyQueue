@@ -310,10 +310,21 @@ func (n *Node) broadcastHeartbeat() {
 				LeaderCommit: commitIndex,
 			}
 
+			isHeartbeat := len(req.Entries) == 0
+			n.logger.Debug("sending heartbeat",
+				"to", addr,
+				"term", req.Term,
+				"commit_index", req.LeaderCommit,
+				"prev_log_index", req.PrevLogIndex,
+				"entries", len(req.Entries),
+				"heartbeat_only", isHeartbeat,
+			)
+
 			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 			defer cancel()
 			resp, err := n.transport.SendAppendEntries(ctx, addr, req)
 			if err != nil {
+				n.logger.Debug("heartbeat failed", "to", addr, "err", err)
 				return
 			}
 
@@ -420,6 +431,15 @@ func (n *Node) handleAppendEntries(req AppendEntriesRequest) AppendEntriesRespon
 	case n.heartbeatC <- struct{}{}:
 	default:
 	}
+
+	n.logger.Debug("received heartbeat",
+		"from_leader", req.LeaderID,
+		"term", req.Term,
+		"leader_commit", req.LeaderCommit,
+		"prev_log_index", req.PrevLogIndex,
+		"entries", len(req.Entries),
+		"our_log_index", n.log.lastIndex(),
+	)
 
 	// consistency check: does our log contain prevLogIndex with prevLogTerm?
 	if req.PrevLogIndex > 0 {
