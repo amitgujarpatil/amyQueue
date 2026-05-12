@@ -82,9 +82,9 @@ func Load(envFile string) (*Config, error) {
 		return nil, fmt.Errorf("RAFT_ELECTION_TIMEOUT_MS: %w", err)
 	}
 
-	cfg.RaftHeartbeatMs, err = getEnvInt("RAFT_HEARTBEAT_INTERVAL_MS", 100)
+	cfg.RaftHeartbeatMs, err = getEnvInt("CONTROLLER_HEART_BEAT_INTERVAL", 100)
 	if err != nil {
-		return nil, fmt.Errorf("RAFT_HEARTBEAT_INTERVAL_MS: %w", err)
+		return nil, fmt.Errorf("CONTROLLER_HEART_BEAT_INTERVAL: %w", err)
 	}
 
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
