@@ -44,6 +44,9 @@ tmp/
 temp/
 *.tmp
 
+# MkDocs generated site
+site/
+
 # Build artifacts
 /amyqueue
 /controller
