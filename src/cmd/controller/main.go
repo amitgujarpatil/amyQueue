@@ -93,76 +93,69 @@ func main() {
 	node.Stop()
 }
 
-// joinCluster discovers the current leader from bootstrap servers and registers
-// this node as an observer.
+// joinCluster registers this node as an observer with the existing cluster.
 //
-// Algorithm:
-//  1. Try each bootstrap server in order — call ClusterInfo (any node answers)
-//  2. From the response, extract the leader address
-//  3. If no leader known yet, retry the next seed
-//  4. Once leader is found, call ObserverJoin directly on the leader
-//  5. If the leader redirects (it stepped down mid-flight), follow the redirect once
+// Flow per attempt:
+//  1. Try ObserverJoin on each bootstrap seed in order
+//  2. If the seed is not the leader it returns LeaderAddr — retry on that address immediately
+//  3. On network error or no leader known yet — log and move to next seed
+//  4. After exhausting all seeds, wait JoinRetryIntervalMs and start over
+//  5. Give up after JoinMaxRetries full passes
+//
+// This avoids the separate ClusterInfo round-trip: ObserverJoin already
+// returns the leader address in its response so any node is a valid entry point.
 func joinCluster(cfg *config.Config, selfRaftAddr string, transport *tcp.Transport, logger *slog.Logger) error {
 	req := raft.ObserverJoinRequest{
 		NodeID: cfg.NodeID,
 		Addr:   selfRaftAddr,
 	}
+	retryInterval := time.Duration(cfg.JoinRetryIntervalMs) * time.Millisecond
 
-	leaderAddr := discoverLeader(cfg.BootstrapServers, transport, logger)
-	if leaderAddr == "" {
-		return fmt.Errorf("could not discover leader from bootstrap servers %v", cfg.BootstrapServers)
-	}
+	for attempt := 1; attempt <= cfg.JoinMaxRetries; attempt++ {
+		logger.Info("join attempt", "attempt", attempt, "of", cfg.JoinMaxRetries, "seeds", cfg.BootstrapServers)
 
-	logger.Info("leader discovered, sending observer join", "leader_addr", leaderAddr)
+		for _, seed := range cfg.BootstrapServers {
+			target := seed
+			for {
+				// single RPC attempt to target
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				resp, err := transport.SendObserverJoin(ctx, target, req)
+				cancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+				if err != nil {
+					logger.Warn("seed unreachable, trying next",
+						"target", target, "attempt", attempt, "err", err)
+					break // move to next seed
+				}
 
-	resp, err := transport.SendObserverJoin(ctx, leaderAddr, req)
-	if err != nil {
-		return fmt.Errorf("observer join failed: %w", err)
-	}
-	if !resp.Success {
-		// leader may have changed mid-flight — follow the redirect once
-		if resp.LeaderAddr != "" && resp.LeaderAddr != leaderAddr {
-			logger.Info("redirected to new leader", "new_leader", resp.LeaderAddr)
-			ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel2()
-			resp2, err2 := transport.SendObserverJoin(ctx2, resp.LeaderAddr, req)
-			if err2 != nil {
-				return fmt.Errorf("observer join after redirect failed: %w", err2)
+				if resp.Success {
+					logger.Info("joined cluster as observer", "via", target)
+					return nil
+				}
+
+				// not the leader but knows who is — follow redirect
+				if resp.LeaderAddr != "" && resp.LeaderAddr != target {
+					logger.Info("not leader, redirecting",
+						"from", target, "to_leader", resp.LeaderAddr, "leader_id", resp.LeaderID)
+					target = resp.LeaderAddr
+					continue // retry immediately on the actual leader
+				}
+
+				// leader unknown yet or join rejected — log actual reason
+				logger.Warn("join rejected, will retry",
+					"seed", target, "attempt", attempt, "reason", resp.Err)
+				break // wait and retry full pass
 			}
-			if !resp2.Success {
-				return fmt.Errorf("observer join rejected after redirect: %s", resp2.Err)
-			}
-			logger.Info("joined cluster as observer", "via_leader", resp.LeaderAddr)
-			return nil
 		}
-		return fmt.Errorf("observer join rejected: %s", resp.Err)
+
+		if attempt < cfg.JoinMaxRetries {
+			logger.Info("all seeds tried, waiting before next attempt",
+				"wait", retryInterval, "attempt", attempt)
+			time.Sleep(retryInterval)
+		}
 	}
 
-	logger.Info("joined cluster as observer", "via_leader", leaderAddr)
-	return nil
-}
-
-// discoverLeader asks each bootstrap server for cluster info and returns the
-// leader's raft address. Tries all seeds before giving up.
-func discoverLeader(seeds []string, transport *tcp.Transport, logger *slog.Logger) string {
-	for _, seed := range seeds {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		info, err := transport.SendClusterInfo(ctx, seed, raft.ClusterInfoRequest{})
-		cancel()
-		if err != nil {
-			logger.Warn("bootstrap seed unreachable", "seed", seed, "err", err)
-			continue
-		}
-		if info.LeaderAddr != "" {
-			logger.Info("cluster info received", "seed", seed, "leader_id", info.LeaderID, "leader_addr", info.LeaderAddr)
-			return info.LeaderAddr
-		}
-		logger.Warn("seed has no leader yet", "seed", seed)
-	}
-	return ""
+	return fmt.Errorf("failed to join cluster after %d attempts via %v", cfg.JoinMaxRetries, cfg.BootstrapServers)
 }
 
 // killPort frees any process listening on the given TCP port.

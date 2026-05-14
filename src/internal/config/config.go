@@ -29,8 +29,10 @@ type Config struct {
 	RaftHeartbeatMs       int
 	LogLevel              string
 	KillPortOnStart       bool   // dev convenience: free the port before binding (default true)
-	ClusterMode      string   // "static" (default) or "dynamic"
-	BootstrapServers []string // dynamic mode: 1+ seed raft addresses, tried in order until leader found
+	ClusterMode          string   // "static" (default) or "dynamic"
+	BootstrapServers     []string // dynamic mode: 1+ seed raft addresses, tried in order until leader found
+	JoinMaxRetries       int      // how many full passes over bootstrap servers before giving up
+	JoinRetryIntervalMs  int      // wait between retry passes (ms)
 }
 
 // Load reads .env file (if present) then overlays actual environment variables.
@@ -98,6 +100,15 @@ func Load(envFile string) (*Config, error) {
 	}
 	// BOOTSTRAP_SERVERS accepts the same comma-separated format as PEER_NODES
 	cfg.BootstrapServers = parsePeerNodes(getEnv("BOOTSTRAP_SERVERS", ""))
+
+	cfg.JoinMaxRetries, err = getEnvInt("JOIN_MAX_RETRIES", 10)
+	if err != nil {
+		return nil, fmt.Errorf("JOIN_MAX_RETRIES: %w", err)
+	}
+	cfg.JoinRetryIntervalMs, err = getEnvInt("JOIN_RETRY_INTERVAL_MS", 2000)
+	if err != nil {
+		return nil, fmt.Errorf("JOIN_RETRY_INTERVAL_MS: %w", err)
+	}
 
 	return cfg, nil
 }

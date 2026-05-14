@@ -1,0 +1,21 @@
+# Title: one line, plain sentence, no tags (max 72 chars)
+
+# --- Problem ---
+# What was broken, missing, or needed? Why did this change need to happen?
+
+# --- Solution ---
+# How did we solve it? Key design decisions made.
+
+# --- Flow / Behaviour Change (if any) ---
+# How does the system behave differently now? Include before/after if useful.
+
+# --- Env vars / Config (if any) ---
+# New or changed env vars introduced by this change.
+
+# ---------------------------------------------------------------
+# Guidelines:
+#   - Title: plain sentence, no feat:/fix:/chore: tags
+#   - Keep each section short — bullets are fine
+#   - Skip sections that don't apply (delete the header too)
+#   - No "Co-Authored-By" lines
+# ---------------------------------------------------------------
