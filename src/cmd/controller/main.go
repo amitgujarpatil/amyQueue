@@ -14,6 +14,7 @@ import (
 
 	"github.com/yourusername/amyqueue/src/internal/api/metadata/http"
 	"github.com/yourusername/amyqueue/src/internal/config"
+	"github.com/yourusername/amyqueue/src/internal/metrics"
 	"github.com/yourusername/amyqueue/src/internal/raft"
 	"github.com/yourusername/amyqueue/src/internal/raft/tcp"
 )
@@ -86,11 +87,22 @@ func main() {
 	}
 	logger.Info("admin HTTP server started", "addr", adminAddr)
 
+	// start Prometheus metrics server on its own port
+	metricsSrv := metrics.NewServer(cfg.MetricsPort, node)
+	if err := metricsSrv.Start(); err != nil {
+		logger.Error("failed to start metrics server", "err", err)
+		_ = adminSrv.Stop()
+		node.Stop()
+		os.Exit(1)
+	}
+	logger.Info("metrics server started", "addr", fmt.Sprintf(":%d", cfg.MetricsPort))
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 
 	logger.Info("shutting down")
+	_ = metricsSrv.Stop()
 	_ = adminSrv.Stop()
 	node.Stop()
 }

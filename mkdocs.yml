@@ -69,11 +69,13 @@ nav:
     - Raft Consensus: architecture/raft.md
     - Transport Layer: architecture/transport.md
     - Cluster Membership: architecture/membership.md
+    - Metrics Design: architecture/metrics.md
   - Operations:
     - operations/index.md
     - Static Cluster: operations/static-cluster.md
     - Dynamic Cluster: operations/dynamic-cluster.md
     - Admin API: operations/admin-api.md
+    - Metrics: operations/metrics.md
   - Internals:
     - internals/index.md
     - System Flows: internals/flows.md

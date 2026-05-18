@@ -84,6 +84,50 @@ Any seed is a valid entry point. Failures are logged with exact reason.
 
 ---
 
+## 2026-05-18 — Metrics design: separate port, external collector, MetricsSource interface
+
+**Question:** How should AmyQueue expose Prometheus metrics? Same port as the
+admin API, or separate? Should the Raft node collect its own metrics or should
+something outside do it?
+
+**Discussion:**
+
+Kafka uses JMX internally (Java-native) and bridges to Prometheus via a JMX
+Exporter agent or an external `kafka_exporter` binary. Go services (etcd,
+CockroachDB, Consul) embed `prometheus/client_golang` directly — no exporter
+needed. The question is where the collection logic lives.
+
+Option A — Collect inside `raft.Node`:
+- Node registers Prometheus metrics at construction time.
+- Increments counters / sets gauges directly as state changes.
+- Tight coupling: `raft` imports `prometheus`. Testing Raft requires a registry.
+- Hard to disable or swap the metrics backend later.
+
+Option B — External collector reads a snapshot:
+- `raft.Node` exposes `MetricsSnapshot()` — a plain read-only struct.
+- A separate `metrics.Collector` in its own package reads that struct and
+  translates it into Prometheus descriptors on each scrape.
+- `raft` never imports `prometheus`. Clean separation.
+- Same pattern as `AdminService` — interface-based, easy to extend.
+
+**Decision:** Option B — `MetricsSource` interface + external `metrics.Collector`.
+
+Port decision: dedicated `METRICS_PORT` (default 9090), separate from
+`HTTP_PORT` (admin API) and `RAFT_PORT` (Raft TCP). Reasons: different
+network access requirements (Prometheus server vs operators vs Raft peers),
+no interference between scrape traffic and admin operations, clear
+responsibility per port.
+
+**Outcome:**
+- `METRICS_PORT` env var added to config (default 9090).
+- `raft.MetricsSource` interface with `MetricsSnapshot()` — implemented by `raft.Node`.
+- `metrics.Collector` in `internal/metrics/` — implements `prometheus.Collector`.
+- `metrics.Server` — thin `http.Server` wrapping `promhttp.Handler()`.
+- `raft` package has zero dependency on `prometheus`.
+- All controller metrics prefixed `amyqueue_raft_*`.
+
+---
+
 ## 2026-05-18 — Why a separate HTTP admin server, and why on every controller node?
 
 **Question:** The Raft TCP transport already handles `ObserverJoin`. Why add a

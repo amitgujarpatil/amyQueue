@@ -35,6 +35,7 @@ type Config struct {
 	JoinRetryIntervalMs      int      // wait between retry passes (ms)
 	AutoPromote              bool     // auto-promote observers to voters when caught up
 	AutoPromoteLagThreshold  int      // max entries behind leader to still be considered caught up
+	MetricsPort              int      // port for the Prometheus /metrics endpoint
 }
 
 // Load reads .env file (if present) then overlays actual environment variables.
@@ -116,6 +117,11 @@ func Load(envFile string) (*Config, error) {
 	cfg.AutoPromoteLagThreshold, err = getEnvInt("AUTO_PROMOTE_LAG_THRESHOLD", 10)
 	if err != nil {
 		return nil, fmt.Errorf("AUTO_PROMOTE_LAG_THRESHOLD: %w", err)
+	}
+
+	cfg.MetricsPort, err = getEnvInt("METRICS_PORT", 9090)
+	if err != nil {
+		return nil, fmt.Errorf("METRICS_PORT: %w", err)
 	}
 
 	return cfg, nil

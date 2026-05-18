@@ -73,6 +73,11 @@ type Node struct {
 	// leader only: observers already submitted for promotion (avoids duplicate AddVoter calls)
 	pendingPromotion map[string]bool
 
+	// cumulative counters for metrics — only ever incremented, never reset
+	electionsStarted  uint64
+	leaderChanges     uint64
+	heartbeatFailures map[string]uint64 // peer addr → count
+
 	heartbeatC chan struct{}
 	stopC      chan struct{}
 	doneC      chan struct{}
@@ -95,18 +100,19 @@ func NewNode(cfg Config, transport Transport, logger *slog.Logger) *Node {
 	}
 
 	return &Node{
-		cfg:              cfg,
-		transport:        transport,
-		log:              newLog(),
-		voters:           voters,
-		logger:           logger.With("node", cfg.ID),
-		state:            Follower,
-		heartbeatC:       make(chan struct{}, 1),
-		stopC:            make(chan struct{}),
-		doneC:            make(chan struct{}),
-		nextIndex:        make(map[string]uint64),
-		matchIndex:       make(map[string]uint64),
-		pendingPromotion: make(map[string]bool),
+		cfg:               cfg,
+		transport:         transport,
+		log:               newLog(),
+		voters:            voters,
+		logger:            logger.With("node", cfg.ID),
+		state:             Follower,
+		heartbeatC:        make(chan struct{}, 1),
+		stopC:             make(chan struct{}),
+		doneC:             make(chan struct{}),
+		nextIndex:         make(map[string]uint64),
+		matchIndex:        make(map[string]uint64),
+		pendingPromotion:  make(map[string]bool),
+		heartbeatFailures: make(map[string]uint64),
 	}
 }
 
@@ -156,6 +162,52 @@ func (n *Node) ClusterStatus() ClusterStatusResponse {
 		LeaderAddr: n.leaderAddr,
 		Term:       n.currentTerm,
 		Members:    n.voters.Members(),
+	}
+}
+
+// MetricsSnapshot returns a point-in-time copy of node state for the metrics
+// collector. Takes the node mutex once and copies everything — the caller
+// receives a value with no pointers into the node's internal state.
+func (n *Node) MetricsSnapshot() MetricsSnapshot {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	members := n.voters.Members()
+
+	// observer lag — only meaningful on the leader
+	observerLag := make(map[string]int64)
+	if n.state == Leader {
+		lastIdx := n.log.lastIndex()
+		for _, m := range members {
+			if m.State == NodeObserver {
+				match := n.matchIndex[m.Addr]
+				lag := int64(lastIdx) - int64(match)
+				if lag < 0 {
+					lag = 0
+				}
+				observerLag[m.ID] = lag
+			}
+		}
+	}
+
+	// copy heartbeat failures map
+	failures := make(map[string]uint64, len(n.heartbeatFailures))
+	for addr, count := range n.heartbeatFailures {
+		failures[addr] = count
+	}
+
+	return MetricsSnapshot{
+		NodeID:            n.cfg.ID,
+		State:             n.state,
+		Term:              n.currentTerm,
+		CommitIndex:       n.commitIndex,
+		LastApplied:       n.lastApplied,
+		LeaderID:          n.leaderID,
+		Members:           members,
+		ObserverLag:       observerLag,
+		ElectionsStarted:  n.electionsStarted,
+		LeaderChanges:     n.leaderChanges,
+		HeartbeatFailures: failures,
 	}
 }
 
@@ -383,6 +435,7 @@ func (n *Node) runCandidate() {
 	n.mu.Lock()
 	n.currentTerm++
 	n.votedFor = n.cfg.ID
+	n.electionsStarted++
 	term := n.currentTerm
 	n.mu.Unlock()
 
@@ -536,6 +589,9 @@ func (n *Node) broadcastHeartbeat() {
 			resp, err := n.transport.SendAppendEntries(ctx, addr, req)
 			if err != nil {
 				n.logger.Debug("heartbeat failed", "to", addr, "err", err)
+				n.mu.Lock()
+				n.heartbeatFailures[addr]++
+				n.mu.Unlock()
 				return
 			}
 
@@ -651,6 +707,9 @@ func (n *Node) handleAppendEntries(req AppendEntriesRequest) AppendEntriesRespon
 	if req.Term > n.currentTerm {
 		n.currentTerm = req.Term
 		n.votedFor = ""
+	}
+	if req.LeaderID != n.leaderID {
+		n.leaderChanges++
 	}
 	n.state = Follower
 	n.leaderID = req.LeaderID

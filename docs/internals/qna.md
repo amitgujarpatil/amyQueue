@@ -5,6 +5,47 @@ understanding that isn't obvious from reading the code or architecture docs.
 
 ---
 
+## 2026-05-18 — How does Prometheus work and how should AmyQueue expose metrics?
+
+**Q:** How do Prometheus and similar metric collectors work with Kafka? And how
+should we do the same in AmyQueue?
+
+**A:**
+
+Prometheus is a **pull-based** system. It does not receive data — it fetches
+it. Every service exposes a `GET /metrics` HTTP endpoint that returns all
+current metric values in plain text. Prometheus scrapes that endpoint on a
+schedule (default 15s) and stores the values as time-series data.
+
+Kafka is Java so it uses JMX internally. Since Prometheus does not speak JMX,
+a bridge is needed — either a JMX Exporter Java agent running inside the Kafka
+JVM, or an external `kafka_exporter` Go binary that talks to Kafka via its
+admin client API. Both translate internal state into Prometheus text format.
+
+Go services like etcd, CockroachDB, and Consul embed `prometheus/client_golang`
+directly — no exporter or agent needed. The `/metrics` endpoint is built in.
+
+**AmyQueue design decisions:**
+
+1. **Separate configurable port (`METRICS_PORT`, default 9090)** — independent
+   from `RAFT_PORT` (internal Raft TCP) and `HTTP_PORT` (admin API). Different
+   access control requirements: admin API is for operators, metrics port is for
+   the Prometheus server.
+
+2. **External collector — Raft core stays clean.** `raft.Node` exposes a
+   `MetricsSnapshot()` method returning a plain struct. A separate
+   `metrics.Collector` in its own package reads that struct and translates it
+   into Prometheus metrics. The `raft` package never imports `prometheus`.
+
+3. **`MetricsSource` interface** — same pattern as `AdminService`. Any future
+   component (broker, replication manager) implements the interface; the
+   metrics package reads it without knowing what the component does internally.
+
+See [Metrics Design](../architecture/metrics.md) for the full design, metric
+type reference, comparison with Kafka/etcd/CockroachDB, and future plans.
+
+---
+
 ## 2026-05-18 — What does the HTTP admin server do and why was it added?
 
 **Q:** In controller nodes we have an admin server — why did we add it and what does it do?

@@ -23,9 +23,10 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |---|---|---|
-| `RAFT_PORT` | `8081` | Raft consensus TCP port |
-| `HTTP_PORT` | `8080` | HTTP admin API port |
+| `RAFT_PORT` | `8081` | Raft consensus TCP port — internal, peers only |
+| `HTTP_PORT` | `8080` | HTTP admin API — operators and tooling |
 | `GRPC_PORT` | `8082` | gRPC port (future) |
+| `METRICS_PORT` | `9090` | Prometheus `/metrics` scrape endpoint |
 
 ---
 
