@@ -33,12 +33,14 @@ func (s State) String() string {
 
 // Config holds the tunable knobs for a Raft node.
 type Config struct {
-	ID                string
-	Addr              string      // this node's own raft listen address (e.g. "localhost:7001")
-	Peers             []string    // initial voter addresses (static mode); ignored in dynamic mode after bootstrap
-	Mode              ClusterMode // static or dynamic
-	ElectionTimeoutMs int
-	HeartbeatMs       int
+	ID                      string
+	Addr                    string      // this node's own raft listen address (e.g. "localhost:7001")
+	Peers                   []string    // initial voter addresses (static mode); ignored in dynamic mode after bootstrap
+	Mode                    ClusterMode // static or dynamic
+	ElectionTimeoutMs       int
+	HeartbeatMs             int
+	AutoPromote             bool // promote observers to voters automatically when caught up
+	AutoPromoteLagThreshold int  // max log entries behind to still be considered caught up
 }
 
 // Node is a single Raft participant. It owns the state machine, the log, and
@@ -68,6 +70,9 @@ type Node struct {
 	nextIndex  map[string]uint64
 	matchIndex map[string]uint64
 
+	// leader only: observers already submitted for promotion (avoids duplicate AddVoter calls)
+	pendingPromotion map[string]bool
+
 	heartbeatC chan struct{}
 	stopC      chan struct{}
 	doneC      chan struct{}
@@ -90,17 +95,18 @@ func NewNode(cfg Config, transport Transport, logger *slog.Logger) *Node {
 	}
 
 	return &Node{
-		cfg:        cfg,
-		transport:  transport,
-		log:        newLog(),
-		voters:     voters,
-		logger:     logger.With("node", cfg.ID),
-		state:      Follower,
-		heartbeatC: make(chan struct{}, 1),
-		stopC:      make(chan struct{}),
-		doneC:      make(chan struct{}),
-		nextIndex:  make(map[string]uint64),
-		matchIndex: make(map[string]uint64),
+		cfg:              cfg,
+		transport:        transport,
+		log:              newLog(),
+		voters:           voters,
+		logger:           logger.With("node", cfg.ID),
+		state:            Follower,
+		heartbeatC:       make(chan struct{}, 1),
+		stopC:            make(chan struct{}),
+		doneC:            make(chan struct{}),
+		nextIndex:        make(map[string]uint64),
+		matchIndex:       make(map[string]uint64),
+		pendingPromotion: make(map[string]bool),
 	}
 }
 
@@ -451,6 +457,7 @@ func (n *Node) becomeLeader() {
 		n.nextIndex[addr] = nextIdx
 		n.matchIndex[addr] = 0
 	}
+	n.pendingPromotion = make(map[string]bool) // fresh slate — re-evaluate all observers
 	term := n.currentTerm
 	n.mu.Unlock()
 	n.logger.Info("became leader", "term", term, "addr", n.cfg.Addr)
@@ -475,6 +482,7 @@ func (n *Node) runLeader() {
 			if state != Leader {
 				return
 			}
+			n.maybePromoteObservers()
 		}
 	}
 }
@@ -687,6 +695,82 @@ func (n *Node) handleAppendEntries(req AppendEntriesRequest) AppendEntriesRespon
 	resp.Success = true
 	resp.Term = n.currentTerm
 	return resp
+}
+
+// maybePromoteObservers is called by the leader after each heartbeat cycle.
+// When AUTO_PROMOTE is on it checks every observer's matchIndex; if the observer
+// is within AutoPromoteLagThreshold entries of the leader's last log index it
+// submits an AddVoter through the Raft log (once per observer — tracked in
+// pendingPromotion so we don't fire duplicate log entries).
+func (n *Node) maybePromoteObservers() {
+	if n.cfg.Mode != ModeDynamic {
+		return
+	}
+
+	n.mu.Lock()
+	if n.state != Leader {
+		n.mu.Unlock()
+		return
+	}
+	lastIdx := n.log.lastIndex()
+	threshold := n.cfg.AutoPromoteLagThreshold
+	if threshold <= 0 {
+		threshold = 10
+	}
+	n.mu.Unlock()
+
+	for _, m := range n.voters.Members() {
+		if m.State != NodeObserver {
+			continue
+		}
+
+		n.mu.Lock()
+		match := n.matchIndex[m.Addr]
+		alreadyPending := n.pendingPromotion[m.ID]
+		n.mu.Unlock()
+
+		lag := int(lastIdx) - int(match)
+		if lag < 0 {
+			lag = 0
+		}
+		if lag > threshold {
+			continue
+		}
+
+		if !n.cfg.AutoPromote {
+			if !alreadyPending {
+				n.logger.Info("observer caught up, safe to promote to voter",
+					"node_id", m.ID, "addr", m.Addr, "lag", lag,
+					"hint", "POST /cluster/voters {\"node_id\":\""+m.ID+"\",\"addr\":\""+m.Addr+"\"}")
+				n.mu.Lock()
+				n.pendingPromotion[m.ID] = true // suppress repeat messages until next becomeLeader
+				n.mu.Unlock()
+			}
+			continue
+		}
+
+		if alreadyPending {
+			continue
+		}
+
+		n.mu.Lock()
+		n.pendingPromotion[m.ID] = true
+		n.mu.Unlock()
+
+		n.logger.Info("auto-promoting observer to voter",
+			"node_id", m.ID, "addr", m.Addr, "lag", lag)
+
+		go func(id, addr string) {
+			resp := n.AddVoter(AddVoterRequest{NodeID: id, Addr: addr})
+			if resp.Err != "" {
+				n.logger.Warn("auto-promote failed, will retry next heartbeat",
+					"node_id", id, "err", resp.Err)
+				n.mu.Lock()
+				delete(n.pendingPromotion, id)
+				n.mu.Unlock()
+			}
+		}(m.ID, m.Addr)
+	}
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

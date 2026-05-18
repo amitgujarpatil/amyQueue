@@ -7,3 +7,4 @@ problems we hit and how we solved them. Updated as we build.
 - [Problems & Solutions](problems-and-solutions.md) — bugs and design gaps with root cause and fix
 - [Design Discussions](discussions.md) — options considered and decisions made
 - [Raft Dynamic Membership](raft-dynamic-membership.md) — deep dive into membership change design
+- [Q&A](qna.md) — unique questions asked during development with full answers

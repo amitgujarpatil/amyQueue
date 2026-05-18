@@ -64,6 +64,20 @@ cp .env.example .env
 
 ---
 
+## Auto-promotion
+
+| Variable | Default | Description |
+|---|---|---|
+| `AUTO_PROMOTE` | `false` | Leader auto-promotes observers to voters once they catch up |
+| `AUTO_PROMOTE_LAG_THRESHOLD` | `10` | Max log entries behind the leader to be considered caught up |
+
+!!! note
+    Only meaningful when `CLUSTER_MODE=dynamic`. With `AUTO_PROMOTE=false` (default)
+    an observer stays an observer until you call `POST /cluster/voters` manually.
+    Set it to `true` only on nodes you intend to become full voting members.
+
+---
+
 ## Developer conveniences
 
 | Variable | Default | Description |

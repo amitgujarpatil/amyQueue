@@ -80,6 +80,7 @@ nav:
     - Problems & Solutions: internals/problems-and-solutions.md
     - Design Discussions: internals/discussions.md
     - Raft Dynamic Membership: internals/raft-dynamic-membership.md
+    - Q&A: internals/qna.md
 
 extra:
   social:

@@ -31,8 +31,10 @@ type Config struct {
 	KillPortOnStart       bool   // dev convenience: free the port before binding (default true)
 	ClusterMode          string   // "static" (default) or "dynamic"
 	BootstrapServers     []string // dynamic mode: 1+ seed raft addresses, tried in order until leader found
-	JoinMaxRetries       int      // how many full passes over bootstrap servers before giving up
-	JoinRetryIntervalMs  int      // wait between retry passes (ms)
+	JoinMaxRetries           int      // how many full passes over bootstrap servers before giving up
+	JoinRetryIntervalMs      int      // wait between retry passes (ms)
+	AutoPromote              bool     // auto-promote observers to voters when caught up
+	AutoPromoteLagThreshold  int      // max entries behind leader to still be considered caught up
 }
 
 // Load reads .env file (if present) then overlays actual environment variables.
@@ -108,6 +110,12 @@ func Load(envFile string) (*Config, error) {
 	cfg.JoinRetryIntervalMs, err = getEnvInt("JOIN_RETRY_INTERVAL_MS", 2000)
 	if err != nil {
 		return nil, fmt.Errorf("JOIN_RETRY_INTERVAL_MS: %w", err)
+	}
+
+	cfg.AutoPromote = getEnvBool("AUTO_PROMOTE", false)
+	cfg.AutoPromoteLagThreshold, err = getEnvInt("AUTO_PROMOTE_LAG_THRESHOLD", 10)
+	if err != nil {
+		return nil, fmt.Errorf("AUTO_PROMOTE_LAG_THRESHOLD: %w", err)
 	}
 
 	return cfg, nil

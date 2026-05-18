@@ -26,16 +26,48 @@ The node will:
 
 1. Try each bootstrap server with `ObserverJoin`
 2. Follow redirect to leader if needed
-3. Register as observer — start receiving log replication
+3. Register as observer — start receiving log replication via `AppendEntries`
 4. Catch up to leader's log
 
-Promote it to voter once caught up:
+**Option 1 — Manual promotion (default, recommended for production):**
+
+Watch the leader's logs. Once the observer has replicated the log within
+`AUTO_PROMOTE_LAG_THRESHOLD` entries the leader prints:
+
+```
+observer caught up, safe to promote to voter
+  node_id=ctrl-4  addr=localhost:7004  lag=0
+  hint=POST /cluster/voters {"node_id":"ctrl-4","addr":"localhost:7004"}
+```
+
+Then call:
 
 ```bash
 curl -X POST http://localhost:8080/cluster/voters \
   -H "Content-Type: application/json" \
   -d '{"node_id":"ctrl-4","addr":"localhost:7004"}'
 ```
+
+**Option 2 — Auto-promote (set the flag at startup):**
+
+```bash
+NODE_ROLE=controller NODE_ID=ctrl-4 RAFT_PORT=7004 HTTP_PORT=8083 \
+  CLUSTER_MODE=dynamic AUTO_PROMOTE=true \
+  BOOTSTRAP_SERVERS="localhost:7001,localhost:7002,localhost:7003" \
+  go run ./src/cmd/controller
+```
+
+The leader promotes `ctrl-4` automatically once its log lag is within
+`AUTO_PROMOTE_LAG_THRESHOLD` (default 10) entries. The leader logs:
+
+```
+auto-promoting observer to voter  node_id=ctrl-4  addr=localhost:7004  lag=0
+```
+
+!!! warning
+    Auto-promote grows quorum silently. A 3-voter cluster promoted to 4 now
+    needs 3 votes to commit — a newly promoted node that crashes can stall
+    the cluster. Prefer manual promotion in production.
 
 ## Removing a node
 

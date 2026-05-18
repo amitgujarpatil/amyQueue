@@ -52,12 +52,14 @@ func main() {
 	selfRaftAddr := fmt.Sprintf("localhost:%d", cfg.RaftPort)
 
 	node := raft.NewNode(raft.Config{
-		ID:                cfg.NodeID,
-		Addr:              selfRaftAddr,
-		Peers:             cfg.PeerNodes,
-		Mode:              raft.ClusterMode(cfg.ClusterMode),
-		ElectionTimeoutMs: cfg.RaftElectionTimeoutMs,
-		HeartbeatMs:       cfg.RaftHeartbeatMs,
+		ID:                      cfg.NodeID,
+		Addr:                    selfRaftAddr,
+		Peers:                   cfg.PeerNodes,
+		Mode:                    raft.ClusterMode(cfg.ClusterMode),
+		ElectionTimeoutMs:       cfg.RaftElectionTimeoutMs,
+		HeartbeatMs:             cfg.RaftHeartbeatMs,
+		AutoPromote:             cfg.AutoPromote,
+		AutoPromoteLagThreshold: cfg.AutoPromoteLagThreshold,
 	}, transport, logger)
 
 	if err := node.Start(); err != nil {

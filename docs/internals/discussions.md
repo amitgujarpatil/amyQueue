@@ -84,6 +84,49 @@ Any seed is a valid entry point. Failures are logged with exact reason.
 
 ---
 
+## 2026-05-18 — Why a separate HTTP admin server, and why on every controller node?
+
+**Question:** The Raft TCP transport already handles `ObserverJoin`. Why add a
+separate HTTP server? And should it run on every controller or only the leader?
+
+**Discussion:**
+
+The TCP transport speaks only the internal Raft wire protocol. There is no way
+to ask it for cluster status or trigger admin operations from outside the
+cluster without implementing the full Raft framing client-side.
+
+Two options:
+
+- Expose admin ops over the existing TCP port by adding new message types.
+  Downside: every operator tool (curl, scripts, health checkers) would need a
+  custom binary client. Mixes operator-facing ops with internal Raft framing.
+- Add a separate HTTP server backed by the same `raft.AdminService` interface.
+  Operator tools use plain HTTP. The Raft core is untouched. Replacing HTTP
+  with gRPC later = new adapter, zero changes to Raft.
+
+This is the same split Kafka makes: broker port 9092 speaks Kafka wire
+protocol only; a separate JMX/admin port exposes management. KRaft controller
+nodes follow the same pattern — internal controller port for replication,
+separate admin surface for operators.
+
+**Why every controller node, not just the leader:**
+
+The leader changes over time. If only one node ran the admin server and lost
+leadership or crashed, there would be no admin surface. Running it on every
+controller means there is always an entry point. Non-leaders already return
+`LeaderAddr` in the response for write operations (`JoinAsObserver`, `AddVoter`,
+`RemoveVoter`) so callers can follow the redirect. `GET /cluster/status` is
+useful on any node for monitoring and debugging.
+
+**Decision:** HTTP admin server starts unconditionally on every controller node.
+`raft.AdminService` interface keeps Raft core decoupled from the HTTP layer.
+
+**Brokers do not run this server.** They have no Raft state — membership
+management is a controller concern. Brokers will get their own HTTP surface
+in a later phase (health probes, metrics) but backed by a different interface.
+
+---
+
 ## 2026-05-14 — Should observer-to-voter promotion be automatic?
 
 **Question:** Currently an admin must call `POST /cluster/voters` to promote
@@ -118,6 +161,11 @@ Admin calls `POST /cluster/voters`. Leader checks the observer is caught up
 before writing the log entry. Rejects with "observer not ready, lag = N" if
 not. Admin retries when ready.
 
-**Decision pending.** Leaning toward Option A (`AUTO_PROMOTE` flag) because
-it fits the dynamic intent while still keeping explicit control at startup.
-Next step: implement Option A with `AUTO_PROMOTE` and `LAG_THRESHOLD` env vars.
+**Decision: Option A implemented.**
+- `AUTO_PROMOTE=false` by default — observer stays observer until manually promoted.
+- Set `AUTO_PROMOTE=true` on a node at startup to opt in.
+- Leader checks `matchIndex >= lastIndex - AUTO_PROMOTE_LAG_THRESHOLD` on each heartbeat tick.
+- When caught up, leader calls `AddVoter` through the Raft log (same path as manual promotion).
+- `pendingPromotion` map on the leader prevents duplicate log entries per observer.
+- Map is cleared on `becomeLeader` so a freshly elected leader re-evaluates all observers.
+- Monitoring-only observers: leave `AUTO_PROMOTE=false` (the default).

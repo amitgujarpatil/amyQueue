@@ -51,6 +51,80 @@ Full Voter  ← participates in elections, counts toward quorum
 
 ---
 
+## How log replication works (and how "caught up" is measured)
+
+`AppendEntries` is both the heartbeat and the replication RPC — same call,
+same code path. When the leader has new log entries since the last send, they
+are included in the request. When there is nothing new, it is a pure heartbeat.
+Observers receive `AppendEntries` just like voters do.
+
+The leader tracks two indices per peer (voter or observer):
+
+| Index | Meaning |
+|---|---|
+| `nextIndex[addr]` | Next log entry to send to this peer |
+| `matchIndex[addr]` | Highest log entry confirmed replicated on this peer |
+
+Every successful `AppendEntries` response updates `matchIndex[addr]`.
+Lag is simply:
+
+```
+lag = leader.lastIndex - matchIndex[observer.addr]
+```
+
+When `lag <= AUTO_PROMOTE_LAG_THRESHOLD` (default 10), the observer has
+replicated everything within the threshold and is considered caught up.
+
+---
+
+## Observer promotion — manual vs auto
+
+The leader checks every observer's lag after each heartbeat tick in
+`maybePromoteObservers()`.
+
+**Manual promotion (`AUTO_PROMOTE=false`, the default):**
+
+When an observer crosses the lag threshold the leader logs:
+
+```
+observer caught up, safe to promote to voter
+  node_id=ctrl-4  addr=localhost:7004  lag=0
+  hint=POST /cluster/voters {"node_id":"ctrl-4","addr":"localhost:7004"}
+```
+
+This message fires once per leadership term per observer (suppressed by
+`pendingPromotion` map to avoid spam every heartbeat). A newly elected leader
+re-evaluates all observers and logs it again if they are still caught up.
+
+The operator then calls the hint manually:
+
+```bash
+curl -X POST http://localhost:8080/cluster/voters \
+  -H "Content-Type: application/json" \
+  -d '{"node_id":"ctrl-4","addr":"localhost:7004"}'
+```
+
+**Auto-promotion (`AUTO_PROMOTE=true`):**
+
+When the lag threshold is met the leader automatically calls `AddVoter` through
+the Raft log — same path as the manual `POST /cluster/voters`. The leader logs:
+
+```
+auto-promoting observer to voter  node_id=ctrl-4  addr=localhost:7004  lag=0
+```
+
+`pendingPromotion` prevents duplicate log entries if the promotion takes more
+than one heartbeat cycle to commit. The map is cleared on `becomeLeader` so a
+freshly elected leader re-evaluates all observers from scratch.
+
+!!! warning "Auto-promote grows quorum silently"
+    Promoting from 3 voters to 4 raises the quorum from 2 to 3 — the cluster
+    now needs 3 votes to commit anything. A fourth node that crashes shortly
+    after promotion can stall the cluster. Use `AUTO_PROMOTE=false` (the
+    default) in production and promote deliberately.
+
+---
+
 ## Why observers can't call elections
 
 An observer that called an election would increment the term and disrupt the
