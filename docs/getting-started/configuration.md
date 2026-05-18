@@ -85,3 +85,4 @@ cp .env.example .env
 |---|---|---|
 | `KILL_PORT_ON_START` | `true` | Free `RAFT_PORT` before binding. Useful in dev, disable in production |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `LOG_FORMAT` | `text` | `text` (human-readable) or `json` (machine-parseable, use in production) |

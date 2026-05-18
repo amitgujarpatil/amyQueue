@@ -33,7 +33,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger := buildLogger(cfg.LogLevel)
+	logger := buildLogger(cfg.LogLevel, cfg.LogFormat)
 
 	logger.Info("controller starting",
 		"node_id", cfg.NodeID,
@@ -208,7 +208,7 @@ func killPort(port int, logger *slog.Logger) {
 	}
 }
 
-func buildLogger(level string) *slog.Logger {
+func buildLogger(level, format string) *slog.Logger {
 	var l slog.Level
 	switch level {
 	case "debug":
@@ -220,5 +220,9 @@ func buildLogger(level string) *slog.Logger {
 	default:
 		l = slog.LevelInfo
 	}
-	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: l}))
+	opts := &slog.HandlerOptions{Level: l}
+	if format == "json" {
+		return slog.New(slog.NewJSONHandler(os.Stdout, opts))
+	}
+	return slog.New(slog.NewTextHandler(os.Stdout, opts))
 }

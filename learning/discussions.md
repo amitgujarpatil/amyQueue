@@ -84,6 +84,48 @@ Any seed is a valid entry point. Failures are logged with exact reason.
 
 ---
 
+## 2026-05-18 — Log collection: stdout vs files, text vs JSON, why slog
+
+**Question:** How does log collection work? How does Kafka do it vs AmyQueue?
+Should we switch slog to JSON format?
+
+**Discussion:**
+
+Logs are push-based — the process writes, a collector picks up. Unlike
+Prometheus (pull), the pipeline flows outward: process → shipper → aggregator
+→ query UI.
+
+Kafka writes to files in `/var/log/kafka/` via Log4j. Shippers (Filebeat,
+Fluentd) tail those files. This adds file rotation, disk management, and
+path configuration to every deployment.
+
+Go services write to stdout. Container runtimes and systemd capture stdout
+automatically. No file management. Follows 12-factor app principle. AmyQueue
+already does this — `slog` writes to `os.Stdout`.
+
+The remaining question: text vs JSON. Text is human-readable in dev. JSON
+is trivially parseable by any shipper — no regex, no grok patterns. With
+JSON, every key-value pair slog writes becomes a queryable Loki label
+automatically.
+
+**Decision:** Add `LOG_FORMAT` env var. Default `text` (dev stays readable).
+Set `json` in production. One line change in `buildLogger` — swap
+`NewTextHandler` for `NewJSONHandler`. No call sites change.
+
+**Why slog (stdlib) not zerolog/zap:**
+- Zero external dependency — in stdlib since Go 1.21.
+- Both JSON and text handlers built in.
+- If perf ever matters, swap `buildLogger` only — all call sites use `*slog.Logger`.
+
+**Outcome:**
+- `LOG_FORMAT` env var added (`text` default, `json` for production).
+- `buildLogger(level, format)` selects handler.
+- Config validates value at load time — unknown format is a startup error.
+- Logger flows: `main()` → `raft.NewNode(..., logger)` → `n.logger.With("node", id)`.
+  All Raft logs carry `node=ctrl-1` without any call site passing it.
+
+---
+
 ## 2026-05-18 — Metrics design: separate port, external collector, MetricsSource interface
 
 **Question:** How should AmyQueue expose Prometheus metrics? Same port as the

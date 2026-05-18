@@ -5,6 +5,48 @@ understanding that isn't obvious from reading the code or architecture docs.
 
 ---
 
+## 2026-05-18 — How does log collection work, and should we use JSON format?
+
+**Q:** How do log collectors like Loki and ELK work? How does Kafka handle
+logging? Should AmyQueue switch slog to JSON?
+
+**A:**
+
+Logs are **push-based** — the process writes to stdout, a shipper picks it up
+and forwards it to an aggregator. Unlike Prometheus (which pulls `/metrics`),
+nothing in the process sends logs anywhere — the pipeline lives outside it.
+
+```
+App → stdout → shipper (Promtail/Filebeat) → aggregator (Loki/Elasticsearch) → Grafana/Kibana
+```
+
+Kafka writes to files via Log4j and shippers tail those files. Go services
+write to stdout — Docker and systemd capture it automatically. No file
+management needed. AmyQueue already uses stdout via `slog`.
+
+**Text vs JSON:**
+Text (`key=value`) is readable in dev. JSON is trivially parseable — every
+`slog` key-value pair becomes a queryable field in Loki with no regex or grok
+configuration. The switch is one line: `NewTextHandler` → `NewJSONHandler`.
+
+**Decision:** `LOG_FORMAT` env var — `text` default (dev stays readable),
+`json` for production. `buildLogger(level, format)` selects the handler.
+No call sites change — they all use `*slog.Logger`.
+
+**Why slog not zerolog/zap:** stdlib since Go 1.21, both handlers built in,
+zero external dependency. Swapping to a faster library later means changing
+only `buildLogger`.
+
+**Loki vs Elasticsearch:** Loki indexes only labels (not full text) — much
+cheaper to run. Natural fit alongside Prometheus since Grafana queries both.
+Elasticsearch full-text indexes everything — more powerful queries but far
+more resource intensive. Use Loki unless you need full-text search.
+
+See [Logging](../operations/logging.md) for the full stack setup and
+implementation detail.
+
+---
+
 ## 2026-05-18 — How does Prometheus work and how should AmyQueue expose metrics?
 
 **Q:** How do Prometheus and similar metric collectors work with Kafka? And how

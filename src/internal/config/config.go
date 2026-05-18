@@ -28,6 +28,7 @@ type Config struct {
 	RaftElectionTimeoutMs int
 	RaftHeartbeatMs       int
 	LogLevel              string
+	LogFormat             string // "text" (default, human-readable) or "json" (machine-parseable)
 	KillPortOnStart       bool   // dev convenience: free the port before binding (default true)
 	ClusterMode          string   // "static" (default) or "dynamic"
 	BootstrapServers     []string // dynamic mode: 1+ seed raft addresses, tried in order until leader found
@@ -95,6 +96,10 @@ func Load(envFile string) (*Config, error) {
 	}
 
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
+	cfg.LogFormat = getEnv("LOG_FORMAT", "text")
+	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
+		return nil, fmt.Errorf("LOG_FORMAT must be 'text' or 'json', got %q", cfg.LogFormat)
+	}
 	cfg.KillPortOnStart = getEnvBool("KILL_PORT_ON_START", true)
 
 	cfg.ClusterMode = getEnv("CLUSTER_MODE", "static")
