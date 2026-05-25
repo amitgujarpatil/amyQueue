@@ -34,8 +34,10 @@ type AddVoterRequest struct {
 }
 
 type AddVoterResponse struct {
-	Success bool
-	Err     string
+	Success    bool
+	LeaderID   string // redirect hint when not leader
+	LeaderAddr string
+	Err        string
 }
 
 // RemoveVoterRequest is the admin operation to remove a voter from the set.
@@ -44,8 +46,10 @@ type RemoveVoterRequest struct {
 }
 
 type RemoveVoterResponse struct {
-	Success bool
-	Err     string
+	Success    bool
+	LeaderID   string // redirect hint when not leader
+	LeaderAddr string
+	Err        string
 }
 
 type VoteRequest struct {

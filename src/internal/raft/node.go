@@ -94,9 +94,12 @@ func NewNode(cfg Config, transport Transport, logger *slog.Logger) *Node {
 	voters := newVoterSet()
 
 	// seed voter set — self is always a voter
-	voters.AddVoter(cfg.ID, "") // addr for self is not needed for outbound RPCs
+	voters.AddVoter(cfg.ID, cfg.Addr)
 	for _, addr := range cfg.Peers {
-		voters.AddVoter(addr, addr) // in static mode ID == addr for simplicity
+		// in static mode only the raft address is known at startup — ID is
+		// unknown until the peer's first AppendEntries arrives carrying LeaderID.
+		// Use addr as a placeholder ID; it gets corrected in handleAppendEntries.
+		voters.AddVoter(addr, addr)
 	}
 
 	return &Node{
@@ -265,7 +268,10 @@ func (n *Node) AddVoter(req AddVoterRequest) AddVoterResponse {
 	n.mu.Unlock()
 
 	if state != Leader {
-		return AddVoterResponse{Err: ErrNotLeader.Error() + ", leader is " + leaderID}
+		n.mu.Lock()
+		leaderAddr := n.leaderAddr
+		n.mu.Unlock()
+		return AddVoterResponse{LeaderID: leaderID, LeaderAddr: leaderAddr, Err: ErrNotLeader.Error()}
 	}
 	if n.cfg.Mode == ModeStatic {
 		return AddVoterResponse{Err: "cluster is in static mode"}
@@ -294,7 +300,10 @@ func (n *Node) RemoveVoter(req RemoveVoterRequest) RemoveVoterResponse {
 	n.mu.Unlock()
 
 	if state != Leader {
-		return RemoveVoterResponse{Err: ErrNotLeader.Error() + ", leader is " + leaderID}
+		n.mu.Lock()
+		leaderAddr := n.leaderAddr
+		n.mu.Unlock()
+		return RemoveVoterResponse{LeaderID: leaderID, LeaderAddr: leaderAddr, Err: ErrNotLeader.Error()}
 	}
 	if n.cfg.Mode == ModeStatic {
 		return RemoveVoterResponse{Err: "cluster is in static mode"}
@@ -714,6 +723,12 @@ func (n *Node) handleAppendEntries(req AppendEntriesRequest) AppendEntriesRespon
 	n.state = Follower
 	n.leaderID = req.LeaderID
 	n.leaderAddr = req.LeaderAddr
+
+	// in static mode peers start with addr-as-ID placeholders — fix the
+	// leader's member record as soon as we learn its real ID and address
+	if req.LeaderID != "" && req.LeaderAddr != "" {
+		n.voters.UpdateID(req.LeaderAddr, req.LeaderID)
+	}
 
 	select {
 	case n.heartbeatC <- struct{}{}:

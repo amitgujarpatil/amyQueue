@@ -47,7 +47,7 @@ cp .env.example .env
 | Variable | Default | Description |
 |---|---|---|
 | `RAFT_ELECTION_TIMEOUT_MS` | `1000` | Base election timeout. Actual is randomised up to +50% to avoid split votes |
-| `CONTROLLER_HEART_BEAT_INTERVAL` | `100` | How often leader sends heartbeats (ms). Keep at least 5-10× smaller than election timeout |
+| `CONTROLLER_HEART_BEAT_INTERVAL` | `1000` | How often leader sends heartbeats (ms). Keep at least 5-10× smaller than election timeout |
 
 !!! warning "Ratio rule"
     Always keep `CONTROLLER_HEART_BEAT_INTERVAL` well below `RAFT_ELECTION_TIMEOUT_MS`.

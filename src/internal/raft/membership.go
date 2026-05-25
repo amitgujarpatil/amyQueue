@@ -71,6 +71,21 @@ func (v *VoterSet) AddObserver(id, addr string) {
 	}
 }
 
+// UpdateID corrects a placeholder ID (addr-as-ID) once the real node ID is
+// known. Looks up the member by addr and renames the key if the ID changed.
+func (v *VoterSet) UpdateID(addr, realID string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for id, m := range v.members {
+		if m.Addr == addr && id != realID {
+			delete(v.members, id)
+			m.ID = realID
+			v.members[realID] = m
+			return
+		}
+	}
+}
+
 // Remove removes a node entirely from the set.
 func (v *VoterSet) Remove(id string) {
 	v.mu.Lock()

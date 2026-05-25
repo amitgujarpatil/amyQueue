@@ -84,6 +84,7 @@ nav:
     - Design Discussions: internals/discussions.md
     - Raft Dynamic Membership: internals/raft-dynamic-membership.md
     - Q&A: internals/qna.md
+  - Roadmap: roadmap/index.md
 
 extra:
   social:
