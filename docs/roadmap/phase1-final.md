@@ -308,13 +308,39 @@ else:
 
 **Why Raft not HTTP:** all controllers must apply updates in the same order. HTTP calls are lost on crash. Only Raft provides the ordering and durability guarantees needed for consistent state across the controller cluster.
 
+## Decisions (continued)
+
+### D6 — Deletion Cascade Atomicity
+
+See full discussion and Kafka comparison → `phase1-deletion-cascade.md`
+
+**The reader problem is already solved** — `mu.Lock()` is held for the entire `Apply` call. Readers are blocked until the full delete completes. They never see a partial state.
+
+**The crash problem (Phase 1):** memory is wiped on crash. Full log replay reconstructs clean state. Not a real problem for in-memory store.
+
+**The crash problem (Phase 4 — contract established now):**
+
+> `applyDeleteTopic` is idempotent. Deleting a non-existent key is always a no-op, never an error.
+
+Go's `delete(map, key)` already satisfies this for free. Phase 4 storage layer must honour the same contract for disk operations.
+
+**Deletion order — partitions before topic record:**
+
+Partitions deleted first (`0..NumPartitions-1`), then topic record, then name index. If crash happens after partitions are gone but before topic record is removed, log replay re-runs the full delete cleanly. Avoids orphaned partition records on disk that would require a GC scan on startup.
+
+**Delete key is always TopicID (UUID), never name:**
+
+`applyDeleteTopic` operates on `PartitionKey{TopicID, i}` and `store.topics[TopicID]`. Never on name. Safe to replay even if the same name was reused for a new topic after the original was deleted — the new topic has a different UUID and is untouched.
+
+**Phase 4 direction — Snapshots (Kafka-aligned):**
+
+Kafka's crash recovery is bounded by snapshots: serialise the full MetadataImage periodically, replay only the delta on restart. AmyQueue Phase 4 adopts the same pattern. This makes the idempotent-delete contract less critical in practice — most deletions are captured in snapshots before any crash window.
+
+---
+
 ## Still Open
 
-### Open 1 — Deletion Cascade Atomicity
-
-**Problem:** `DeleteTopic` must remove the Topic record plus all N partition entries from the flat map. Under the current design this happens inside one `Apply` call under the state machine mutex — appears atomic to readers. But:
-- What if the process crashes mid-delete? On restart, Raft log replay re-runs `applyDeleteTopic` from the committed entry — the operation replays fully. This is safe as long as `applyDeleteTopic` is idempotent (deleting an already-missing key is a no-op in Go maps).
-- Needs explicit confirmation that idempotent delete is the agreed contract before implementation.
+None. All design questions for Phase 1 are resolved.
 
 ---
 

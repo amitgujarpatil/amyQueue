@@ -12,7 +12,7 @@
 - [x] How do we handle ISR at creation time?
 - [ ] Epoch fencing strategy?
 - [ ] How do we represent "no leader" cleanly?
-- [ ] Deletion cascade — topic delete + partition cleanup?
+- [x] Deletion cascade — topic delete + partition cleanup?
 - [ ] Under-replication — desired vs actual replicas?
 - [x] Partition assignment algorithm — how to minimize blast radius when a broker goes down?
 - [x] Flat partition map vs nested inside Topic?
