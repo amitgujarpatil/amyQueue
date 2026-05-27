@@ -6,19 +6,25 @@
 
 ## Questions Being Discussed
 
-- [ ] What fields define a broker record?
-- [ ] BrokerEpoch type, who assigns it, when does it increment?
-- [ ] RackID — include now or defer?
-- [ ] IncarnationID — needed or is BrokerEpoch enough?
-- [ ] Multiple listeners — one host:port now or extensible from the start?
-- [ ] Controller store vs broker self-state — what lives where?
-- [ ] Re-registration — what happens when a broker restarts?
-- [ ] Idempotency on retry?
-- [ ] Controller failover during registration?
-- [ ] Metrics aligned with Kafka?
-- [ ] Key log events?
-- [ ] What to pick from Kafka now vs defer?
+- [x] What fields define a broker record?
+- [x] BrokerEpoch type, who assigns it, when does it increment?
+- [x] RackID — include now or defer?
+- [x] IncarnationID — needed or is BrokerEpoch enough?
+- [x] Multiple listeners — one host:port now or extensible from the start?
+- [x] Controller store vs broker self-state — what lives where?
+- [x] Re-registration — what happens when a broker restarts?
+- [x] Idempotency on retry?
+- [x] Controller failover during registration?
+- [x] Metrics aligned with Kafka?
+- [x] Key log events?
+- [x] What to pick from Kafka now vs defer?
 - [x] Authentication — how do only trusted nodes join?
+- [x] Graceful shutdown vs crash?
+- [x] BrokerID assignment — operator configured or auto?
+- [x] Store broker methods?
+- [x] Broker startup sequence?
+- [x] Operator HTTP read API?
+- [x] Registration response shape?
 
 ---
 
@@ -599,3 +605,152 @@ type RegisterBrokerPayload struct {
 Token validation is middleware — happens before routing to any handler.
 State machine re-validates ClusterID as defence-in-depth.
 Stale epoch is a separate 403 after auth passes.
+
+---
+
+### D-BrokerID — Operator-Configured, Required, No Auto-Assignment
+
+Kafka KRaft requires `node.id` to be explicitly set in config. No auto-generation
+in KRaft mode — operator is responsible for uniqueness. AmyQueue follows the same.
+
+BrokerID must be set via config file or env var. Broker fails to start immediately
+if not set — no silent default.
+
+```
+AMYQUEUE_BROKER_ID=broker-us-east-1a
+# or config:
+broker_id: "broker-us-east-1a"
+```
+
+Why no auto-assign: auto-assignment requires a distributed counter or UUID, which
+means the controller must persist and return it as part of registration. This
+couples identity generation to registration. Kafka avoids this by making it
+operator responsibility. A mis-configured duplicate BrokerID is an operator error
+with clear detection (warning log on re-registration from different address).
+
+---
+
+### D-StoreMethods — Broker Store API
+
+Store gains these methods for broker operations, mirroring Kafka's MetadataCache:
+
+```go
+// RegisterBroker stores BrokerInfo and returns the assigned epoch.
+// If BrokerID already exists with same host:port: returns current epoch (idempotent).
+// If BrokerID already exists with different host:port: epoch++, update address.
+// If BrokerID is new: epoch = 1.
+RegisterBroker(info BrokerInfo) (epoch int64, err error)
+
+// GetBroker returns the registered BrokerInfo or ErrNotFound.
+GetBroker(id BrokerID) (*BrokerInfo, error)
+
+// ListBrokers returns all registered brokers regardless of status.
+// Used for operator visibility (GET /brokers).
+ListBrokers() []*BrokerInfo
+
+// ListActiveBrokers returns only brokers with Status == BrokerStatusActive.
+// Used by D1 assignment algorithm — must not assign to shutting_down brokers.
+ListActiveBrokers() []*BrokerInfo
+
+// SetBrokerStatus updates the broker status in the store.
+// Used by applyShutdownBroker to mark Status = ShuttingDown.
+SetBrokerStatus(id BrokerID, status BrokerStatus, expectedEpoch int64) error
+```
+
+ListActiveBrokers vs ListBrokers separation is important: the assignment algorithm
+(D1) calls ListActiveBrokers so a broker announcing its shutdown is immediately
+excluded from new partition assignments. ListBrokers is for operator APIs only.
+
+---
+
+### D-RegistrationResponse — Include ClusterID and MetadataVersion
+
+Kafka's BrokerRegistrationResponse includes BrokerEpoch and error code.
+AmyQueue extends this with ClusterID and MetadataVersion so the broker can
+detect stale cached state from a previous run.
+
+```json
+POST /brokers/register -> 200
+{
+  "brokerEpoch":     6,
+  "clusterID":       "550e8400-e29b-41d4-a716-446655440000",
+  "metadataVersion": 42
+}
+```
+
+metadataVersion = Store.version at the time applyRegisterBroker runs.
+If the broker has a local metadata cache from a previous run with an older
+version, it discards it and waits for a fresh LeaderAndISR push.
+
+---
+
+### D-StartupSequence — Ordered Steps From Boot to Ready
+
+Mirrors Kafka KRaft broker startup. Each step must succeed before the next begins.
+
+```
+Step 1 — Load and validate config
+  Required fields: BrokerID, Host, Port, ClusterID, ClusterToken
+  Fail fast with clear error if any missing — do not start with defaults
+
+Step 2 — Register with controller
+  POST /brokers/register with retry + exponential backoff
+  Follow 503 redirects to find the leader
+  On success: store BrokerEpoch, ClusterID, MetadataVersion locally
+
+Step 3 — Start heartbeat goroutine (Phase 5)
+  Send POST /brokers/{id}/heartbeat every BrokerHeartbeatMs
+  Include epoch + metadataVersion in every heartbeat
+  On stale epoch response: re-register (go back to Step 2)
+
+Step 4 — Wait for LeaderAndISR push (Phase 9)
+  Controller pushes partition assignments after registration
+  Broker builds PartitionStateCache from the push
+  If no partitions assigned: proceed immediately
+
+Step 5 — Start accepting client connections
+  Only after PartitionStateCache is populated (or empty push received)
+  Producers and consumers can now connect
+```
+
+Fail fast in Step 1 prevents silent misconfiguration.
+Steps 3-5 are implemented in later phases but the contract is defined here
+so each phase knows exactly what it is responsible for.
+
+---
+
+### D-OperatorAPI — Read Endpoints for Broker Visibility
+
+Both endpoints require ClusterToken authentication (not public).
+
+```
+GET /brokers
+  Returns all registered brokers with live status.
+
+  Response 200:
+  {
+    "brokers": [
+      {
+        "brokerID":        "broker-us-east-1a",
+        "host":            "10.0.0.1",
+        "port":            9092,
+        "rackID":          "us-east-1a",
+        "epoch":           5,
+        "status":          "active",
+        "alive":           true,
+        "lastHeartbeatMs": 1200
+      }
+    ]
+  }
+
+GET /brokers/{id}
+  Returns a single broker. 404 if not registered.
+
+  Same fields as above for a single broker object.
+```
+
+status field: durable — from BrokerInfo in Store (active or shutting_down).
+alive field: ephemeral — from LivenessTracker (true if last heartbeat within
+BrokerSessionTimeoutMs, false otherwise). These are separate concerns deliberately:
+a broker can be status=active but alive=false (crashed), or status=shutting_down
+and alive=true (mid-controlled-shutdown). Operators need both.
