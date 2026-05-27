@@ -429,6 +429,87 @@ These are separate concerns deliberately. A broker can be `status=active` and `a
 
 ---
 
+### D10 — Optional Mutual TLS
+
+**Decision:** mTLS is supported but off by default. Controlled entirely by config file and environment variables. No code path changes — when disabled the HTTP stack is identical to the plain mode. When enabled the same HTTP server is wrapped with a `tls.Config` that requires and verifies client certificates.
+
+**TLSConfig struct:**
+
+```go
+type TLSConfig struct {
+    Enabled  bool
+    CertFile string   // PEM certificate — same cert used as server cert AND client cert
+    KeyFile  string   // PEM private key
+    CAFile   string   // PEM CA certificate — used to verify the peer's certificate
+}
+```
+
+One cert per node. The cluster CA signs all of them. Both controller and broker use the same `TLSConfig` shape — controller loads it to configure its HTTP server, broker loads it to configure its HTTP client.
+
+**Configuration:**
+
+Config file:
+```yaml
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""
+  ca_file: ""
+```
+
+Environment variables (take precedence over config file):
+```
+AMYQUEUE_TLS_ENABLED=false
+AMYQUEUE_TLS_CERT_FILE=/etc/amyqueue/tls/cert.pem
+AMYQUEUE_TLS_KEY_FILE=/etc/amyqueue/tls/key.pem
+AMYQUEUE_TLS_CA_FILE=/etc/amyqueue/tls/ca.pem
+```
+
+**Validation at startup:** If `tls.enabled=true` and any of `cert_file`, `key_file`, or `ca_file` is empty or unreadable → fail fast with a clear error. Do not start with a partial TLS config.
+
+**What changes when mTLS is enabled:**
+
+Controller HTTP server:
+```
+tls.Config{
+    ClientAuth: tls.RequireAndVerifyClientCert,
+    ClientCAs:  loaded from CAFile,
+    Certificates: []tls.Certificate{ loaded from CertFile + KeyFile },
+}
+```
+
+Broker HTTP client:
+```
+tls.Config{
+    Certificates: []tls.Certificate{ loaded from CertFile + KeyFile },
+    RootCAs:      loaded from CAFile,
+}
+```
+
+Both sides present their cert. Both sides verify the peer's cert against the cluster CA. A node with a cert not signed by the cluster CA cannot complete the TLS handshake — rejected at the transport layer before any HTTP data is exchanged.
+
+**Relationship with shared token:**
+
+When mTLS is enabled the cert already proves cluster membership. The shared token check (application-layer middleware) still runs on top — defence-in-depth. This is the same layering Kafka supports when combining SSL with SASL.
+
+Future upgrade: a `TLSClusterAuth` adapter can replace `TokenClusterAuth` — the `ClusterAuth` interface makes this a single swap with no application code changes.
+
+**Port:** No separate port for TLS. Same port as plain mode — if `tls.enabled=true`, the listener is wrapped with TLS. No Kafka-style `PLAINTEXT:9092 / SSL:9093` split at this stage.
+
+**Certificate management:** AmyQueue does not manage certs. The operator is responsible for issuing, distributing, and renewing certificates. Cert changes require a restart — no hot reload.
+
+**What mTLS does NOT replace:**
+
+| Check | Without mTLS | With mTLS |
+|---|---|---|
+| ClusterID validation | Yes | Yes — still enforced |
+| Shared token check | Yes | Yes — still enforced (defence-in-depth) |
+| Stale epoch check | Yes | Yes — separate concern |
+| Transport encryption | No | Yes — added by mTLS |
+| Transport identity | No | Yes — both sides prove identity via cert |
+
+---
+
 ## Still Open
 
 None. All design questions for Phase 2 are resolved.
@@ -447,8 +528,9 @@ None. All design questions for Phase 2 are resolved.
 | Rack-aware assignment logic | Future |
 | Multiple listeners per broker | Future |
 | IncarnationID | Future |
-| mTLS / certificate-based auth | Future |
 | Per-broker feature/capability negotiation | Future |
+| Certificate hot reload (no restart required) | Future |
+| Replacing token check with TLSClusterAuth adapter | Future |
 
 ---
 
@@ -501,3 +583,4 @@ None. All design questions for Phase 2 are resolved.
 | `src/internal/controller/broker_handler.go` | HTTP handlers: `POST /brokers/register`, `POST /brokers/{id}/heartbeat`, `POST /brokers/{id}/shutdown`, `GET /brokers`, `GET /brokers/{id}` |
 | `src/internal/controller/state_machine.go` | `applyRegisterBroker`, `applyShutdownBroker` |
 | `src/internal/broker/broker.go` | Startup sequence, SIGTERM handler, controlled shutdown client |
+| `src/internal/config/tls.go` | `TLSConfig` struct, loader (reads cert/key/CA from files), env var override |

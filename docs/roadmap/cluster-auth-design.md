@@ -282,15 +282,38 @@ stale epoch). Clients can distinguish and react appropriately.
 
 ---
 
+## Optional Mutual TLS (Phase 2)
+
+mTLS is supported as an opt-in transport-layer security layer. Off by default. Enabled via config or env var. See full design → `phase2-final.md` D10.
+
+**When disabled (default):** plain HTTP. Shared token is the only protection.
+
+**When enabled:** HTTPS with mutual TLS. Controller and broker both present certificates signed by the cluster CA. Both sides verify the peer's cert. A node without a valid cert cannot complete the TLS handshake.
+
+**Relationship with shared token when mTLS is on:**
+The token check still runs at the application layer — defence-in-depth. mTLS adds transport encryption and mutual identity proof. The token adds application-layer authorization. They are complementary, not redundant.
+
+**Future upgrade path:** A `TLSClusterAuth` adapter can replace `TokenClusterAuth` entirely once mTLS is the sole trust mechanism. The `ClusterAuth` interface makes this a single adapter swap — no application code changes.
+
+**Summary of what each layer provides:**
+
+| Layer | Mechanism | What It Provides |
+|---|---|---|
+| Transport (optional) | mTLS | Encryption + mutual identity via cert |
+| Application (always) | ClusterID + Token | Cluster identity sanity + shared secret auth |
+
+---
+
 ## What Is NOT Covered (Deferred)
 
 | Feature | Why Deferred |
 |---|---|
-| mTLS / certificate-based auth | Requires CA, cert tooling, rotation infrastructure |
 | Per-broker ACLs | Overkill — all cluster nodes are equally trusted |
 | Client-facing auth (producers/consumers) | Separate concern — Phase 4+ |
 | Token expiry / TTL | Tokens are long-lived secrets, not JWTs |
 | Audit log of auth events | Useful but not critical for now |
+| Certificate hot reload | Restart required for cert changes, hot reload deferred |
+| Replacing token with TLSClusterAuth adapter | Deferred — token + mTLS run in parallel for now |
 
 ---
 
@@ -305,4 +328,4 @@ stale epoch). Clients can distinguish and react appropriately.
 | Where is auth enforced | Application-layer HTTP middleware (ClusterAuth interface) |
 | Can it move to transport layer | Yes — ClusterAuth interface makes it a single adapter swap |
 | ClusterID in HTTP API | Yes — GET /cluster/info (public, no token required) |
-| mTLS | Deferred |
+| mTLS | Optional — off by default, enabled via tls.enabled config / AMYQUEUE_TLS_ENABLED env var |
