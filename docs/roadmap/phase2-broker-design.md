@@ -279,6 +279,7 @@ current epoch whether or not the first attempt committed.
 | Multiple listeners (PLAINTEXT SSL SASL) | Defer |
 | Feature and capability negotiation | Defer |
 | Rack-aware assignment logic | Defer |
+| Controlled shutdown (SIGTERM -> leader migration -> drain -> exit) | Pick |
 | Explicit deregistration command | Defer |
 
 ---
@@ -407,6 +408,169 @@ When the broker receives a produce request it must:
 MinISR check (step 2) happens BEFORE writing (step 3). A write is never
 partially accepted — either the full durability contract is met or the
 request is rejected cleanly.
+
+---
+
+## Graceful Shutdown (Controlled Shutdown)
+
+### Why It Matters
+
+Without controlled shutdown every broker restart causes a 30-second outage
+window per broker — the controller must wait for the heartbeat timeout before
+declaring the broker dead and triggering leader election.
+
+```
+CRASH (no controlled shutdown):
+  t=0    Broker dies
+  t=30s  Controller detects death via heartbeat timeout
+  t=30s  Leader election triggered
+  = 30 seconds of partition unavailability
+
+CONTROLLED SHUTDOWN:
+  t=0    SIGTERM received
+  t=~1s  Controller migrates leaders, commits to Raft
+  t=~1s  Broker drains and exits
+  = ~1 second of metadata refresh, no actual unavailability
+```
+
+In a 10-broker rolling restart (upgrade, config change, cert rotation):
+  Without controlled shutdown: 10 x 30s = 5 minutes of rolling disruption
+  With controlled shutdown:    10 x 1s  = 10 seconds
+
+### How Kafka Does It
+
+Kafka calls it Controlled Shutdown. The broker sends a ControlledShutdownRequest
+to the controller. The controller elects new leaders for all partitions the broker
+leads (excluding the shutting-down broker from candidates), removes it from ISR of
+follower partitions, and responds once all Raft entries commit. The broker then
+drains, flushes, and exits. If some partitions cannot be migrated (no other ISR
+member), Kafka retries up to controlled.shutdown.max.retries times then exits dirty.
+
+### AmyQueue Design
+
+New BrokerStatus field in BrokerInfo (durable — goes through Raft):
+
+```go
+type BrokerStatus string
+
+const (
+    BrokerStatusActive       BrokerStatus = "active"
+    BrokerStatusShuttingDown BrokerStatus = "shutting_down"
+)
+```
+
+Dead is NOT in this enum. Death is ephemeral, detected by LivenessTracker,
+never written to the Raft log.
+
+New Raft command ShutdownBrokerPayload:
+
+```go
+type ShutdownBrokerPayload struct {
+    BrokerID      BrokerID
+    ExpectedEpoch int64   // CAS guard — same pattern as D5
+}
+```
+
+applyShutdownBroker: validate BrokerID + epoch match, set Status = ShuttingDown.
+
+Full shutdown sequence:
+
+```
+BROKER                              CONTROLLER LEADER
+  |                                      |
+  | OS sends SIGTERM                     |
+  | stop accepting new connections       |
+  |                                      |
+  |-- POST /brokers/{id}/shutdown ------>|
+  |   { epoch, clusterID, token }        |
+  |                                   Propose ShutdownBroker -> Raft
+  |                                   applyShutdownBroker: Status=ShuttingDown
+  |                                   For each leader partition:
+  |                                     ElectLeader (exclude this broker)
+  |                                     Propose UpdatePartition -> Raft
+  |                                   For each follower partition:
+  |                                     Propose ISR shrink -> Raft
+  |                                   Wait for all to commit
+  |<-- 200 { success: true,         ----|
+  |    migratedPartitions: 12,          |
+  |    failedPartitions: [] }           |
+  |                                     |
+  | drain in-flight requests            |
+  | flush log segments to disk          |
+  | exit 0                              |
+```
+
+### Failure Handling
+
+No other ISR member for a partition:
+```
+ISR=[B3], B3 is shutting down
+ElectLeader finds no candidates
+Partition goes Offline after B3 exits
+failedPartitions returned to broker in response
+Broker logs WARN and exits anyway — operator must investigate
+```
+
+Controller unreachable during shutdown:
+```
+POST /shutdown times out
+Broker retries N times with backoff
+After max retries: dirty shutdown — same path as crash
+LivenessTracker detects death via heartbeat timeout
+```
+
+Shutdown timeout exceeded:
+```
+shutdown_timeout_ms exceeded before all partitions migrated
+Broker aborts, dirty shutdown for remaining partitions
+```
+
+SIGKILL:
+```
+Cannot be caught — dirty shutdown, no controlled path possible
+LivenessTracker detects death after heartbeat timeout (~30s)
+```
+
+### Configuration
+
+```yaml
+shutdown_timeout_ms: 30000          # max wait for controller to migrate leaders
+shutdown_drain_timeout_ms: 5000     # max wait for in-flight requests
+shutdown_max_retries: 3             # retries if controller unreachable
+shutdown_retry_backoff_ms: 5000
+```
+
+### Logs During Shutdown
+
+```
+INFO  received shutdown signal initiating controlled shutdown
+INFO  requesting leader migration   leader_partitions=12 follower_partitions=8
+INFO  leader migration complete     migrated=12 failed=0
+INFO  removed from ISR              follower_partitions=8
+INFO  draining in-flight requests   count=3
+INFO  log segments flushed          partitions=20
+INFO  broker shutdown complete      epoch=6 uptime=72h
+
+WARN  leader migration incomplete   failed=2 partitions=[topic-A/0 topic-B/3]
+WARN  those partitions will go offline after exit
+WARN  shutdown timeout exceeded     remaining=5 proceeding dirty
+```
+
+### Signal Handling
+
+| Signal | Behaviour |
+|---|---|
+| SIGTERM | Controlled shutdown — migrate leaders, drain, flush, exit |
+| SIGINT | Same as SIGTERM — controlled shutdown |
+| SIGKILL | Cannot catch — dirty shutdown, 30s recovery via heartbeat timeout |
+
+### Differences From Kafka
+
+| | Kafka | AmyQueue |
+|---|---|---|
+| Shutdown request | Dedicated Kafka protocol RPC | HTTP POST on admin server |
+| Retry loop | Per-partition retries | Single round, retry full request |
+| ISR removal for followers | Part of controlled shutdown | Same — propose ISR shrink |
 
 ---
 
