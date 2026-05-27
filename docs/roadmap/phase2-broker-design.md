@@ -283,6 +283,133 @@ current epoch whether or not the first attempt committed.
 
 ---
 
+## Write Durability Guarantees — acks + MinISR
+
+This is a foundational concept that directly shapes how the broker validates
+produce requests in future phases. Documented here so the contract is clear
+before implementation begins.
+
+### The Setup
+
+With 1 partition, RF=3, MinISR=2, 3 brokers:
+
+```
+B0 = leader replica    (accepts writes, serves reads)
+B1 = follower replica  (replicates from B0)
+B2 = follower replica  (replicates from B0)
+
+ISR = [B0, B1, B2]
+```
+
+### What MinISR Controls
+
+MinISR is a write refusal floor on the broker side. It says:
+
+  If len(ISR) < MinISR, REFUSE all writes — even if a leader exists.
+
+It does not control when a partition goes offline. It controls when writes
+are accepted. Reads always work as long as a leader exists.
+
+### What acks Controls
+
+The producer chooses its durability guarantee per request:
+
+| acks | Write considered successful when |
+|---|---|
+| 0 | Never waits — fire and forget |
+| 1 | Leader wrote it to its local log |
+| all (-1) | Every current ISR member wrote it to their log |
+
+MinISR only has teeth when acks=all. With acks=1 the producer does not
+wait for any ISR member beyond the leader.
+
+### What Happens When the Leader Dies
+
+```
+Before: ISR=[B0, B1, B2]  len=3 >= MinISR=2  writes flowing to B0
+
+B0 dies:
+  Controller detects death via heartbeat timeout (Phase 5)
+  ElectLeader picks B1 — first alive ISR member (Phase 6)
+  ISR shrinks to [B1, B2]  len=2 >= MinISR=2
+
+After: B1 is new leader, B2 is follower
+  Partition ONLINE — writes continue to B1
+  Producers with stale metadata pointing to B0 get "not leader"
+  error, refresh metadata, retry to B1 — takes milliseconds
+```
+
+The system continues. No write outage as long as ISR stays >= MinISR.
+
+### Data Loss Depends on acks
+
+With acks=all + MinISR=2:
+```
+Producer writes W1
+  B0 waits for B1 and B2 to confirm they wrote it
+  All ISR confirmed -> SUCCESS returned to producer
+  W1 is on B1 and B2
+
+B0 dies:
+  B1 becomes leader — W1 is still there
+  ZERO DATA LOSS for any acknowledged write
+```
+
+With acks=1:
+```
+Producer writes W1
+  B0 writes it locally, returns SUCCESS immediately
+  B1 and B2 have NOT replicated W1 yet
+
+B0 dies before B1/B2 pull W1:
+  W1 exists only on dead B0
+  B1 becomes leader — W1 is GONE
+  DATA LOSS even though producer received SUCCESS
+```
+
+### When ISR Drops Below MinISR
+
+If B2 also dies after B0 already died:
+```
+ISR = [B1]  len=1 < MinISR=2
+
+Partition ONLINE  (B1 is still leader, reads work)
+Writes REFUSED    (NOT_ENOUGH_REPLICAS error to producer)
+
+Writes resume only when B2 comes back and rejoins ISR
+```
+
+This prevents writing into a dangerously under-replicated state where the
+next broker death would cause unavoidable data loss.
+
+### The Guarantee in One Line
+
+```
+acks=all + MinISR=2:
+  Any write returned SUCCESS is on >= 2 brokers.
+  You can lose any 1 broker without losing that data.
+
+acks=1:
+  The leader received it. No further guarantee.
+```
+
+### Impact on Broker Implementation (Future Phases)
+
+When the broker receives a produce request it must:
+
+1. Check it is the leader for this partition — reject with NOT_LEADER if not
+2. Check len(ISR) >= topic.Config.MinISR — reject with NOT_ENOUGH_REPLICAS if not
+3. Write to local log
+4. If acks=all: wait for all current ISR followers to fetch and acknowledge
+5. If acks=1: return success immediately after step 3
+6. If acks=0: return success before step 3
+
+MinISR check (step 2) happens BEFORE writing (step 3). A write is never
+partially accepted — either the full durability contract is met or the
+request is rejected cleanly.
+
+---
+
 ## Decisions Made
 
 ### D-Auth — Cluster Authentication: ClusterID + Shared Token

@@ -68,7 +68,7 @@ type TopicConfig struct {
     RetentionMs     int64   // -1 = unlimited
     RetentionBytes  int64   // -1 = unlimited
     SegmentBytes    int64
-    MinISR          int32   // minimum ISR size required to accept writes
+    MinISR          int32   // minimum ISR size to accept writes — with acks=all guarantees any acknowledged write survives loss of (RF - MinISR) brokers. See phase2-broker-design.md write durability section.
     MaxMessageBytes int32
     CleanupPolicy   string  // "delete" | "compact"
 }
