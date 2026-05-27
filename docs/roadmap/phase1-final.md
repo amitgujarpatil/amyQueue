@@ -338,6 +338,62 @@ Kafka's crash recovery is bounded by snapshots: serialise the full MetadataImage
 
 ---
 
+## Decisions (continued)
+
+### D7 — Cluster Authentication: ClusterID + Shared Token
+
+See full design → `cluster-auth-design.md`
+
+**Phase 1 additions:**
+
+Store gains `ClusterID string` — set once on `CmdClusterInit`, never changes.
+
+```go
+type ClusterInitPayload struct {
+    ClusterID string   // UUID generated at propose time, never inside Apply
+}
+```
+
+`applyClusterInit`: if ClusterID already set → no-op (idempotent). Otherwise store it.
+
+Raft join requests (ObserverJoin, AddVoter) gain `ClusterID` and `Token` fields.
+HTTP middleware validates via `ClusterAuth` before forwarding to the node.
+
+**ClusterAuth interface** — application layer now, transport-layer adapter later:
+
+```go
+type ClusterAuth interface {
+    ValidateRequest(clusterID, token string) error
+}
+```
+
+`TokenClusterAuth` accepts PrimaryToken or SecondaryToken (rotation grace period).
+Middleware calls this on every protected endpoint. Handler never sees unauthenticated requests.
+
+**Token config** — both config file and env var supported, env var takes precedence:
+```
+AMYQUEUE_CLUSTER_TOKEN=amyqueue_token          # default
+AMYQUEUE_CLUSTER_TOKEN_SECONDARY=              # empty = disabled
+```
+
+**Token rotation — zero downtime three-step procedure:**
+```
+Step 1: set new token as secondary on ALL nodes  (both old + new accepted)
+Step 2: promote new token to primary on ALL nodes (outgoing use new, old still accepted)
+Step 3: clear secondary on ALL nodes              (old token fully retired)
+```
+
+**GET /cluster/info** — public endpoint, no token required:
+```json
+{ "clusterID": "uuid", "version": 42 }
+```
+
+**Error responses:**
+- 401 missing/wrong token
+- 403 wrong ClusterID or stale broker epoch
+
+---
+
 ## Still Open
 
 None. All design questions for Phase 1 are resolved.
@@ -353,6 +409,7 @@ None. All design questions for Phase 1 are resolved.
 | ISR shrink and expand | Phase 7 |
 | HighWatermark | Broker-local, not controller |
 | LeaderAndISR push to brokers | Phase 9 |
+| mTLS / certificate-based auth | Future |
 
 ---
 
@@ -361,5 +418,6 @@ None. All design questions for Phase 1 are resolved.
 | File | Contents |
 |---|---|
 | `src/internal/metadata/model.go` | `TopicID`, `BrokerID`, `PartitionStatus`, `PartitionKey`, `Topic`, `TopicConfig`, `PartitionState` |
-| `src/internal/metadata/store.go` | `Store` with `sync.RWMutex`; `CreateTopic`, `GetTopic`, `GetTopicByName`, `ListTopics`, `DeleteTopic`, `GetPartition`, `UpdatePartition`, `Version` |
+| `src/internal/metadata/store.go` | `Store` with `ClusterID`, `sync.RWMutex`; `CreateTopic`, `GetTopic`, `GetTopicByName`, `ListTopics`, `DeleteTopic`, `GetPartition`, `UpdatePartition`, `Version` |
 | `src/internal/metadata/assignment.go` | `AssignReplicas(brokers, numPartitions, replicationFactor, leaderCounts)` — pure function, fully testable |
+| `src/internal/metadata/auth.go` | `ClusterAuth` interface, `TokenClusterAuth`, `ClusterAuthConfig` |

@@ -18,6 +18,7 @@
 - [ ] Metrics aligned with Kafka?
 - [ ] Key log events?
 - [ ] What to pick from Kafka now vs defer?
+- [x] Authentication — how do only trusted nodes join?
 
 ---
 
@@ -284,4 +285,26 @@ current epoch whether or not the first attempt committed.
 
 ## Decisions Made
 
-_(filling in as we discuss)_
+### D-Auth — Cluster Authentication: ClusterID + Shared Token
+
+See full design → `cluster-auth-design.md`
+
+Registration request must carry ClusterID and Token validated by HTTP middleware
+before the payload reaches the state machine. Heartbeat and all subsequent broker
+calls carry the same headers.
+
+RegisterBrokerPayload:
+```go
+type RegisterBrokerPayload struct {
+    BrokerID  BrokerID
+    Host      string
+    Port      int32
+    RackID    string
+    ClusterID string   // validated against store.ClusterID
+    Token     string   // validated by ClusterAuth middleware
+}
+```
+
+Token validation is middleware — happens before routing to any handler.
+State machine re-validates ClusterID as defence-in-depth.
+Stale epoch is a separate 403 after auth passes.
