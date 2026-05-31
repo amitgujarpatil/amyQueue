@@ -20,3 +20,4 @@ of the design discussion trail.
 | [controlled-shutdown.md](controlled-shutdown.md) | Graceful broker shutdown vs crash, the 30s problem |
 | [cluster-auth.md](cluster-auth.md) | ClusterID + shared token + optional mTLS |
 | [log-structure.md](log-structure.md) | Segment files, offsets, index files, active vs sealed segments |
+| [crc-checksum.md](crc-checksum.md) | CRC32C — what it is, why it matters, what it catches, what it doesn't |
