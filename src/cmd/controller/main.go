@@ -138,14 +138,13 @@ func main() {
 	}
 	logger.Info("metrics server started", "addr", fmt.Sprintf(":%d", cfg.MetricsPort))
 
+	// Partition elector — triggered when the liveness sweep detects a dead broker.
+	elector := controller.NewPartitionElector(node, store, liveness, cfg.UncleanLeaderElectionEnabled, logger)
+
 	// Start liveness sweep — detects dead brokers and fires onDead callback.
-	// Phase 6 wires the onDead callback to trigger leader election.
 	stopSweep := make(chan struct{})
 	sweepIntervalMs := cfg.BrokerHeartbeatMs * 2
-	liveness.StartSweep(sweepIntervalMs, stopSweep, func(id metadata.BrokerID) {
-		logger.Warn("broker missed heartbeat deadline — marking dead", "broker_id", id)
-		// Phase 6 will trigger partition leader election here.
-	})
+	liveness.StartSweep(sweepIntervalMs, stopSweep, elector.OnBrokerDead)
 	logger.Info("liveness sweep started",
 		"interval_ms", sweepIntervalMs,
 		"session_timeout_ms", cfg.BrokerSessionTimeoutMs)
