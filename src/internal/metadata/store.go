@@ -17,6 +17,8 @@ type Store interface {
 	ApplyCreateTopic(payload CreateTopicPayload) error
 	ApplyDeleteTopic(payload DeleteTopicPayload) error
 	ApplyUpdatePartition(payload UpdatePartitionPayload) error
+	ApplyRegisterBroker(payload RegisterBrokerPayload) (epoch int64, err error)
+	ApplyShutdownBroker(payload ShutdownBrokerPayload) error
 
 	// Read
 	GetTopic(id TopicID) (*Topic, bool)
@@ -27,18 +29,22 @@ type Store interface {
 	LeaderCounts() map[BrokerID]int
 	Version() int64
 	ClusterID() string
+
+	// Broker reads
+	GetBroker(id BrokerID) (*BrokerInfo, bool)
+	ListBrokers() []*BrokerInfo
+	ListActiveBrokers() []*BrokerInfo
 }
 
-// InMemoryStore is the Phase 1 implementation of Store.
+// InMemoryStore is the in-memory implementation of Store.
 // All state lives in Go maps under a single RWMutex.
-// Topic reads and partition reads share the same lock but never block each other
-// (both are under RLock).
 type InMemoryStore struct {
 	mu           sync.RWMutex
 	clusterID    string
 	topics       map[TopicID]*Topic
 	topicsByName map[string]TopicID
 	partitions   map[PartitionKey]*PartitionState
+	brokers      map[BrokerID]*BrokerInfo
 	version      int64
 }
 
@@ -47,6 +53,7 @@ func NewInMemoryStore() *InMemoryStore {
 		topics:       make(map[TopicID]*Topic),
 		topicsByName: make(map[string]TopicID),
 		partitions:   make(map[PartitionKey]*PartitionState),
+		brokers:      make(map[BrokerID]*BrokerInfo),
 	}
 }
 
@@ -175,6 +182,60 @@ func (s *InMemoryStore) ApplyUpdatePartition(payload UpdatePartitionPayload) err
 	return nil
 }
 
+// ApplyRegisterBroker upserts a broker record and returns the assigned epoch.
+// Idempotency rules:
+//   - New BrokerID:                epoch = 1
+//   - Same BrokerID + same host:port: return current epoch (retry safety)
+//   - Same BrokerID + diff host:port: epoch++, update address
+func (s *InMemoryStore) ApplyRegisterBroker(payload RegisterBrokerPayload) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.brokers[payload.BrokerID]
+	var epoch int64
+	if !ok {
+		epoch = 1
+	} else if existing.Host == payload.Host && existing.Port == payload.Port {
+		epoch = existing.Epoch // idempotent retry
+	} else {
+		log.Printf("metadata: broker %q re-registering from new address %s:%d (was %s:%d), epoch++",
+			payload.BrokerID, payload.Host, payload.Port, existing.Host, existing.Port)
+		epoch = existing.Epoch + 1
+	}
+
+	s.brokers[payload.BrokerID] = &BrokerInfo{
+		BrokerID: payload.BrokerID,
+		Host:     payload.Host,
+		Port:     payload.Port,
+		RackID:   payload.RackID,
+		Epoch:    epoch,
+		Status:   BrokerStatusActive,
+	}
+	s.version++
+	return epoch, nil
+}
+
+// ApplyShutdownBroker marks a broker as shutting_down using a CAS on epoch.
+// A stale ExpectedEpoch is a no-op (Raft replay safety).
+func (s *InMemoryStore) ApplyShutdownBroker(payload ShutdownBrokerPayload) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	b, ok := s.brokers[payload.BrokerID]
+	if !ok {
+		log.Printf("metadata: ApplyShutdownBroker: broker %q not found, skipping", payload.BrokerID)
+		return nil
+	}
+	if b.Epoch != payload.ExpectedEpoch {
+		log.Printf("metadata: ApplyShutdownBroker: stale epoch for %q (expected %d, current %d), skipping",
+			payload.BrokerID, payload.ExpectedEpoch, b.Epoch)
+		return nil
+	}
+	b.Status = BrokerStatusShuttingDown
+	s.version++
+	return nil
+}
+
 // --- Read operations ---
 
 func (s *InMemoryStore) GetTopic(id TopicID) (*Topic, bool) {
@@ -256,6 +317,41 @@ func (s *InMemoryStore) ClusterID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.clusterID
+}
+
+func (s *InMemoryStore) GetBroker(id BrokerID) (*BrokerInfo, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	b, ok := s.brokers[id]
+	if !ok {
+		return nil, false
+	}
+	cp := *b
+	return &cp, true
+}
+
+func (s *InMemoryStore) ListBrokers() []*BrokerInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*BrokerInfo, 0, len(s.brokers))
+	for _, b := range s.brokers {
+		cp := *b
+		result = append(result, &cp)
+	}
+	return result
+}
+
+func (s *InMemoryStore) ListActiveBrokers() []*BrokerInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*BrokerInfo
+	for _, b := range s.brokers {
+		if b.Status == BrokerStatusActive {
+			cp := *b
+			result = append(result, &cp)
+		}
+	}
+	return result
 }
 
 // leaderCountsLocked computes current leader counts from partitions.

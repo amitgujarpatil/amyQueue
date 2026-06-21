@@ -11,6 +11,19 @@ import (
 
 var ErrNotLeader = errors.New("not the leader")
 
+// NotLeaderError carries the redirect hint so callers can forward the client.
+type NotLeaderError struct {
+	LeaderID   string
+	LeaderAddr string
+}
+
+func (e *NotLeaderError) Error() string {
+	if e.LeaderAddr != "" {
+		return "not the leader; leader at " + e.LeaderAddr
+	}
+	return "not the leader; leader unknown"
+}
+
 type State int
 
 const (
@@ -78,6 +91,8 @@ type Node struct {
 	leaderChanges     uint64
 	heartbeatFailures map[string]uint64 // peer addr → count
 
+	sm StateMachine // optional application state machine; set via WithStateMachine before Start
+
 	heartbeatC chan struct{}
 	stopC      chan struct{}
 	doneC      chan struct{}
@@ -117,6 +132,27 @@ func NewNode(cfg Config, transport Transport, logger *slog.Logger) *Node {
 		pendingPromotion:  make(map[string]bool),
 		heartbeatFailures: make(map[string]uint64),
 	}
+}
+
+// WithStateMachine registers the application state machine that receives committed
+// CmdMetadata entries. Must be called before Start.
+func (n *Node) WithStateMachine(sm StateMachine) *Node {
+	n.sm = sm
+	return n
+}
+
+// Propose encodes a command and appends it to the Raft log, blocking until the
+// entry is committed (and therefore applied by the state machine). Returns
+// *NotLeaderError when called on a non-leader so the caller can redirect.
+func (n *Node) Propose(cmdType CommandType, data []byte) error {
+	n.mu.Lock()
+	if n.state != Leader {
+		err := &NotLeaderError{LeaderID: n.leaderID, LeaderAddr: n.leaderAddr}
+		n.mu.Unlock()
+		return err
+	}
+	n.mu.Unlock()
+	return n.appendAndWaitCommit(cmdType, data)
 }
 
 // Start wires up the transport handlers and begins the Raft event loop.
@@ -667,10 +703,16 @@ func (n *Node) applyCommitted() {
 		if !ok {
 			continue
 		}
-		if entry.Type == CmdMembership {
+		switch entry.Type {
+		case CmdMembership:
 			n.applyMembershipEntry(entry)
+		case CmdMetadata:
+			if n.sm != nil {
+				if err := n.sm.Apply(entry); err != nil {
+					n.logger.Error("state machine apply failed", "index", entry.Index, "err", err)
+				}
+			}
 		}
-		// CmdData entries: application state machine hook goes here in the future
 	}
 }
 

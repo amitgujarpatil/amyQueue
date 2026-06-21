@@ -37,6 +37,23 @@ type Config struct {
 	AutoPromote              bool     // auto-promote observers to voters when caught up
 	AutoPromoteLagThreshold  int      // max entries behind leader to still be considered caught up
 	MetricsPort              int      // port for the Prometheus /metrics endpoint
+
+	// Cluster identity and authentication (Phase 2)
+	ClusterID             string // UUID identifying this cluster; required on controller and broker
+	ClusterToken          string // shared secret for broker↔controller auth (AMYQUEUE_CLUSTER_TOKEN)
+	ClusterTokenSecondary string // secondary token for zero-downtime rotation (AMYQUEUE_CLUSTER_TOKEN_SECONDARY)
+
+	// Broker identity (Phase 2; used when NodeRole == RoleBroker)
+	BrokerID   string // must be set explicitly — no auto-assignment (AMYQUEUE_BROKER_ID)
+	BrokerHost string // host/IP advertised to the controller (AMYQUEUE_BROKER_HOST)
+	BrokerPort int    // client-facing port advertised to the controller (AMYQUEUE_BROKER_PORT)
+	RackID     string // optional rack/availability-zone label (AMYQUEUE_RACK_ID)
+
+	// Controlled shutdown (Phase 2)
+	ShutdownTimeoutMs      int // max wait for controller to migrate all leaders (default 30000)
+	ShutdownDrainTimeoutMs int // max wait for in-flight requests to finish (default 5000)
+	ShutdownMaxRetries     int // retries if controller is unreachable (default 3)
+	ShutdownRetryBackoffMs int // backoff between retries (default 5000)
 }
 
 // Load reads .env file (if present) then overlays actual environment variables.
@@ -127,6 +144,38 @@ func Load(envFile string) (*Config, error) {
 	cfg.MetricsPort, err = getEnvInt("METRICS_PORT", 9090)
 	if err != nil {
 		return nil, fmt.Errorf("METRICS_PORT: %w", err)
+	}
+
+	// Cluster auth (Phase 2)
+	cfg.ClusterID = getEnv("AMYQUEUE_CLUSTER_ID", "")
+	cfg.ClusterToken = getEnv("AMYQUEUE_CLUSTER_TOKEN", "")
+	cfg.ClusterTokenSecondary = getEnv("AMYQUEUE_CLUSTER_TOKEN_SECONDARY", "")
+
+	// Broker identity (Phase 2)
+	cfg.BrokerID = getEnv("AMYQUEUE_BROKER_ID", "")
+	cfg.BrokerHost = getEnv("AMYQUEUE_BROKER_HOST", "localhost")
+	cfg.BrokerPort, err = getEnvInt("AMYQUEUE_BROKER_PORT", cfg.GRPCPort)
+	if err != nil {
+		return nil, fmt.Errorf("AMYQUEUE_BROKER_PORT: %w", err)
+	}
+	cfg.RackID = getEnv("AMYQUEUE_RACK_ID", "")
+
+	// Controlled shutdown (Phase 2)
+	cfg.ShutdownTimeoutMs, err = getEnvInt("AMYQUEUE_SHUTDOWN_TIMEOUT_MS", 30000)
+	if err != nil {
+		return nil, fmt.Errorf("AMYQUEUE_SHUTDOWN_TIMEOUT_MS: %w", err)
+	}
+	cfg.ShutdownDrainTimeoutMs, err = getEnvInt("AMYQUEUE_SHUTDOWN_DRAIN_TIMEOUT_MS", 5000)
+	if err != nil {
+		return nil, fmt.Errorf("AMYQUEUE_SHUTDOWN_DRAIN_TIMEOUT_MS: %w", err)
+	}
+	cfg.ShutdownMaxRetries, err = getEnvInt("AMYQUEUE_SHUTDOWN_MAX_RETRIES", 3)
+	if err != nil {
+		return nil, fmt.Errorf("AMYQUEUE_SHUTDOWN_MAX_RETRIES: %w", err)
+	}
+	cfg.ShutdownRetryBackoffMs, err = getEnvInt("AMYQUEUE_SHUTDOWN_RETRY_BACKOFF_MS", 5000)
+	if err != nil {
+		return nil, fmt.Errorf("AMYQUEUE_SHUTDOWN_RETRY_BACKOFF_MS: %w", err)
 	}
 
 	return cfg, nil
