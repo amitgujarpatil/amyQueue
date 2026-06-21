@@ -62,6 +62,9 @@ func (s *AdminServer) RegisterMetadataRoutes(meta MetadataService) {
 
 	// Cluster init
 	s.mux.HandleFunc("POST /cluster/init", meta.HandleClusterInit)
+
+	// Consumer group coordinator
+	s.mux.HandleFunc("GET /groups/{id}/coordinator", meta.HandleFindCoordinator)
 }
 
 // MetadataService is the interface the AdminServer calls for metadata operations.
@@ -86,6 +89,9 @@ type MetadataService interface {
 
 	// Cluster
 	HandleClusterInit(w http.ResponseWriter, r *http.Request)
+
+	// Consumer group
+	HandleFindCoordinator(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *AdminServer) Start() error {
