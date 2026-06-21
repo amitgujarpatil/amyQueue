@@ -59,7 +59,12 @@ func main() {
 
 	logger.Info("registered with controller", "epoch", b.Epoch)
 
-	// TODO: Phase 5 — start heartbeat goroutine
+	// Step 3 — start heartbeat goroutine
+	hbCtx, hbCancel := context.WithCancel(context.Background())
+	defer hbCancel()
+	b.StartHeartbeat(hbCtx, cfg.BrokerHeartbeatMs)
+	logger.Info("heartbeat goroutine started", "interval_ms", cfg.BrokerHeartbeatMs)
+
 	// TODO: Phase 9 — wait for LeaderAndISR push
 	// TODO: Phase 3+ — start accepting client connections
 

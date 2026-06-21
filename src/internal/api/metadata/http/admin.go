@@ -45,6 +45,7 @@ func NewAdminServer(addr string, svc raft.AdminService) *AdminServer {
 func (s *AdminServer) RegisterMetadataRoutes(meta MetadataService) {
 	// Broker routes
 	s.mux.HandleFunc("POST /brokers/register", meta.HandleRegisterBroker)
+	s.mux.HandleFunc("POST /brokers/{id}/heartbeat", meta.HandleBrokerHeartbeat)
 	s.mux.HandleFunc("POST /brokers/{id}/shutdown", meta.HandleShutdownBroker)
 	s.mux.HandleFunc("GET /brokers", meta.HandleListBrokers)
 	s.mux.HandleFunc("GET /brokers/{id}", meta.HandleGetBroker)
@@ -68,6 +69,7 @@ func (s *AdminServer) RegisterMetadataRoutes(meta MetadataService) {
 type MetadataService interface {
 	// Broker
 	HandleRegisterBroker(w http.ResponseWriter, r *http.Request)
+	HandleBrokerHeartbeat(w http.ResponseWriter, r *http.Request)
 	HandleShutdownBroker(w http.ResponseWriter, r *http.Request)
 	HandleListBrokers(w http.ResponseWriter, r *http.Request)
 	HandleGetBroker(w http.ResponseWriter, r *http.Request)

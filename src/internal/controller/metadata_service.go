@@ -13,13 +13,21 @@ import (
 // MetadataService implements api/metadata/http.MetadataService.
 // It validates auth, proposes Raft commands, and reads from the store.
 type MetadataService struct {
-	node  *raft.Node
-	store metadata.Store
-	auth  metadata.ClusterAuth
+	node     *raft.Node
+	store    metadata.Store
+	auth     metadata.ClusterAuth
+	liveness *metadata.LivenessTracker // nil when Phase 5 is not yet wired
 }
 
 func NewMetadataService(node *raft.Node, store metadata.Store, auth metadata.ClusterAuth) *MetadataService {
 	return &MetadataService{node: node, store: store, auth: auth}
+}
+
+// WithLiveness adds a LivenessTracker so the heartbeat handler can record
+// broker activity and the list endpoints can include alive/dead status.
+func (s *MetadataService) WithLiveness(lt *metadata.LivenessTracker) *MetadataService {
+	s.liveness = lt
+	return s
 }
 
 // --- Broker handlers ---
@@ -99,6 +107,56 @@ func (s *MetadataService) HandleRegisterBroker(w http.ResponseWriter, r *http.Re
 	})
 }
 
+type heartbeatRequest struct {
+	BrokerID        metadata.BrokerID `json:"broker_id"`
+	Epoch           int64             `json:"epoch"`
+	MetadataVersion int64             `json:"metadata_version"`
+	ClusterID       string            `json:"cluster_id"`
+	Token           string            `json:"token"`
+}
+
+func (s *MetadataService) HandleBrokerHeartbeat(w http.ResponseWriter, r *http.Request) {
+	id := metadata.BrokerID(r.PathValue("id"))
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "missing broker id")
+		return
+	}
+
+	var req heartbeatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.auth.ValidateRequest(req.ClusterID, req.Token); err != nil {
+		writeErr(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	b, ok := s.store.GetBroker(id)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "broker not registered")
+		return
+	}
+
+	// Epoch check — stale broker must re-register.
+	if b.Epoch != req.Epoch {
+		writeJSON(w, http.StatusOK, metadata.HeartbeatResponse{
+			CurrentMetadataVersion: s.store.Version(),
+			StaleEpoch:             true,
+		})
+		return
+	}
+
+	if s.liveness != nil {
+		s.liveness.RecordHeartbeat(id)
+	}
+
+	writeJSON(w, http.StatusOK, metadata.HeartbeatResponse{
+		CurrentMetadataVersion: s.store.Version(),
+	})
+}
+
 type shutdownBrokerRequest struct {
 	Epoch     int64  `json:"epoch"`
 	ClusterID string `json:"cluster_id"`
@@ -154,13 +212,28 @@ func (s *MetadataService) HandleShutdownBroker(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, shutdownBrokerResponse{Success: true})
 }
 
+type brokerView struct {
+	*metadata.BrokerInfo
+	Alive           bool  `json:"alive"`
+	LastHeartbeatMs int64 `json:"last_heartbeat_ms"`
+}
+
 func (s *MetadataService) HandleListBrokers(w http.ResponseWriter, r *http.Request) {
 	if err := s.authFromHeader(r); err != nil {
 		writeErr(w, http.StatusUnauthorized, err.Error())
 		return
 	}
 	brokers := s.store.ListBrokers()
-	writeJSON(w, http.StatusOK, map[string]any{"brokers": brokers})
+	views := make([]brokerView, len(brokers))
+	for i, b := range brokers {
+		v := brokerView{BrokerInfo: b}
+		if s.liveness != nil {
+			v.Alive = s.liveness.IsAlive(b.BrokerID)
+			v.LastHeartbeatMs = s.liveness.LastHeartbeatMs(b.BrokerID)
+		}
+		views[i] = v
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"brokers": views})
 }
 
 func (s *MetadataService) HandleGetBroker(w http.ResponseWriter, r *http.Request) {

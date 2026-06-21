@@ -113,10 +113,13 @@ func main() {
 		})
 	}
 
+	// Liveness tracker for broker heartbeats (Phase 5).
+	liveness := metadata.NewLivenessTracker(cfg.BrokerSessionTimeoutMs)
+
 	// start HTTP admin server (dynamic mode exposes membership ops; both modes expose status)
 	adminAddr := fmt.Sprintf(":%d", cfg.HTTPPort)
 	adminSrv := metahttp.NewAdminServer(adminAddr, node)
-	metaSvc := controller.NewMetadataService(node, store, clusterAuth)
+	metaSvc := controller.NewMetadataService(node, store, clusterAuth).WithLiveness(liveness)
 	adminSrv.RegisterMetadataRoutes(metaSvc)
 	if err := adminSrv.Start(); err != nil {
 		logger.Error("failed to start admin server", "err", err)
@@ -135,9 +138,23 @@ func main() {
 	}
 	logger.Info("metrics server started", "addr", fmt.Sprintf(":%d", cfg.MetricsPort))
 
+	// Start liveness sweep — detects dead brokers and fires onDead callback.
+	// Phase 6 wires the onDead callback to trigger leader election.
+	stopSweep := make(chan struct{})
+	sweepIntervalMs := cfg.BrokerHeartbeatMs * 2
+	liveness.StartSweep(sweepIntervalMs, stopSweep, func(id metadata.BrokerID) {
+		logger.Warn("broker missed heartbeat deadline — marking dead", "broker_id", id)
+		// Phase 6 will trigger partition leader election here.
+	})
+	logger.Info("liveness sweep started",
+		"interval_ms", sweepIntervalMs,
+		"session_timeout_ms", cfg.BrokerSessionTimeoutMs)
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
+
+	close(stopSweep)
 
 	logger.Info("shutting down")
 	_ = metricsSrv.Stop()
