@@ -473,9 +473,78 @@ func (s *MetadataService) HandleClusterInit(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Auto-create __consumer_offsets on fresh cluster init (Phase 8).
+	if _, exists := s.store.GetTopicByName(metadata.ConsumerOffsetsTopicName); !exists {
+		s.createConsumerOffsetsTopic()
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cluster_id":       s.store.ClusterID(),
 		"metadata_version": s.store.Version(),
+	})
+}
+
+// createConsumerOffsetsTopic proposes creation of __consumer_offsets through the
+// Raft log. Errors are logged but not fatal — the topic can be created later.
+func (s *MetadataService) createConsumerOffsetsTopic() {
+	cfg := metadata.DefaultConsumerOffsetsConfig()
+	activeBrokers := s.store.ListActiveBrokers()
+	brokerIDs := make([]metadata.BrokerID, len(activeBrokers))
+	for i, b := range activeBrokers {
+		brokerIDs[i] = b.BrokerID
+	}
+
+	topicID := metadata.TopicID(newUUID())
+	payload := metadata.CreateTopicPayload{
+		TopicID:           topicID,
+		Name:              metadata.ConsumerOffsetsTopicName,
+		NumPartitions:     cfg.NumPartitions,
+		ReplicationFactor: cfg.ReplicationFactor,
+		Internal:          true,
+		Config: metadata.TopicConfig{
+			RetentionMs:   -1,
+			CleanupPolicy: "compact",
+		},
+		Brokers: brokerIDs,
+	}
+	cmd, err := metadata.EncodeMetadataCommand(metadata.CmdTypeCreateTopic, payload)
+	if err != nil {
+		return
+	}
+	_ = s.node.Propose(raft.CmdMetadata, cmd)
+}
+
+// --- Consumer group handlers ---
+
+type coordinatorResponse struct {
+	GroupID    string `json:"group_id"`
+	BrokerID   string `json:"broker_id"`
+	Host       string `json:"host"`
+	Port       int32  `json:"port"`
+}
+
+func (s *MetadataService) HandleFindCoordinator(w http.ResponseWriter, r *http.Request) {
+	if err := s.authFromHeader(r); err != nil {
+		writeErr(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	groupID := r.PathValue("id")
+	if groupID == "" {
+		writeErr(w, http.StatusBadRequest, "missing group id")
+		return
+	}
+
+	broker, err := metadata.FindCoordinator(groupID, s.store)
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, coordinatorResponse{
+		GroupID:  groupID,
+		BrokerID: string(broker.BrokerID),
+		Host:     broker.Host,
+		Port:     broker.Port,
 	})
 }
 
