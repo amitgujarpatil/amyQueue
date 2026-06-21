@@ -9,6 +9,7 @@ type CommandType byte
 const (
 	CmdData       CommandType = 0 // normal application data
 	CmdMembership CommandType = 1 // membership change (add/remove voter)
+	CmdMetadata   CommandType = 2 // metadata state machine command (topics, brokers, partitions)
 )
 
 // ObserverJoinRequest is sent by a new node to the leader when it wants to

@@ -12,8 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yourusername/amyqueue/src/internal/api/metadata/http"
+	metahttp "github.com/yourusername/amyqueue/src/internal/api/metadata/http"
 	"github.com/yourusername/amyqueue/src/internal/config"
+	"github.com/yourusername/amyqueue/src/internal/controller"
+	"github.com/yourusername/amyqueue/src/internal/metadata"
 	"github.com/yourusername/amyqueue/src/internal/metrics"
 	"github.com/yourusername/amyqueue/src/internal/raft"
 	"github.com/yourusername/amyqueue/src/internal/raft/tcp"
@@ -52,6 +54,10 @@ func main() {
 
 	selfRaftAddr := fmt.Sprintf("localhost:%d", cfg.RaftPort)
 
+	// Build metadata store and state machine before starting the Raft node.
+	store := metadata.NewInMemoryStore()
+	sm := metadata.NewMetadataStateMachine(store)
+
 	node := raft.NewNode(raft.Config{
 		ID:                      cfg.NodeID,
 		Addr:                    selfRaftAddr,
@@ -61,7 +67,7 @@ func main() {
 		HeartbeatMs:             cfg.RaftHeartbeatMs,
 		AutoPromote:             cfg.AutoPromote,
 		AutoPromoteLagThreshold: cfg.AutoPromoteLagThreshold,
-	}, transport, logger)
+	}, transport, logger).WithStateMachine(sm)
 
 	if err := node.Start(); err != nil {
 		logger.Error("failed to start raft node", "err", err)
@@ -77,9 +83,28 @@ func main() {
 		}
 	}
 
+	// Build cluster auth. When ClusterID or ClusterToken is empty the controller
+	// starts without auth (dev mode). Warn loudly so operators notice.
+	var clusterAuth metadata.ClusterAuth
+	if cfg.ClusterID == "" || cfg.ClusterToken == "" {
+		logger.Warn("AMYQUEUE_CLUSTER_ID or AMYQUEUE_CLUSTER_TOKEN not set — running without auth (dev mode only)")
+		clusterAuth = metadata.NewTokenClusterAuth(metadata.ClusterAuthConfig{
+			ClusterID:    "dev-cluster",
+			PrimaryToken: "dev-token",
+		})
+	} else {
+		clusterAuth = metadata.NewTokenClusterAuth(metadata.ClusterAuthConfig{
+			ClusterID:      cfg.ClusterID,
+			PrimaryToken:   cfg.ClusterToken,
+			SecondaryToken: cfg.ClusterTokenSecondary,
+		})
+	}
+
 	// start HTTP admin server (dynamic mode exposes membership ops; both modes expose status)
 	adminAddr := fmt.Sprintf(":%d", cfg.HTTPPort)
-	adminSrv := http.NewAdminServer(adminAddr, node)
+	adminSrv := metahttp.NewAdminServer(adminAddr, node)
+	metaSvc := controller.NewMetadataService(node, store, clusterAuth)
+	adminSrv.RegisterMetadataRoutes(metaSvc)
 	if err := adminSrv.Start(); err != nil {
 		logger.Error("failed to start admin server", "err", err)
 		node.Stop()

@@ -7,32 +7,61 @@ import (
 	"github.com/yourusername/amyqueue/src/internal/raft"
 )
 
-// AdminServer exposes cluster membership operations over HTTP.
-// It calls raft.AdminService — it knows nothing about TCP or gRPC.
+// AdminServer exposes cluster membership operations and metadata operations over HTTP.
 //
-// Routes:
+// Raft admin routes:
 //   GET  /cluster/status          — current leader, term, member list
 //   POST /cluster/observers/join  — new node registers itself as observer
 //   POST /cluster/voters          — promote observer to voter (admin op)
 //   DELETE /cluster/voters/{id}   — remove a voter (admin op)
 //
+// Metadata routes (registered via RegisterMetadataRoutes):
+//   POST   /brokers/register       — broker self-registration
+//   POST   /brokers/{id}/shutdown  — controlled broker shutdown
+//   GET    /brokers                — list all registered brokers
+//   GET    /brokers/{id}           — get single broker
+//
 // To replace HTTP with gRPC: implement the same operations in
-// api/metadata/grpc/admin.go calling the same raft.AdminService interface.
+// api/metadata/grpc/admin.go calling the same service interfaces.
 type AdminServer struct {
 	svc  raft.AdminService
 	addr string
+	mux  *http.ServeMux
 	srv  *http.Server
 }
 
 func NewAdminServer(addr string, svc raft.AdminService) *AdminServer {
-	s := &AdminServer{svc: svc, addr: addr}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /cluster/status", s.handleStatus)
-	mux.HandleFunc("POST /cluster/observers/join", s.handleJoin)
-	mux.HandleFunc("POST /cluster/voters", s.handleAddVoter)
-	mux.HandleFunc("DELETE /cluster/voters/{id}", s.handleRemoveVoter)
-	s.srv = &http.Server{Addr: addr, Handler: mux}
+	s := &AdminServer{svc: svc, addr: addr, mux: http.NewServeMux()}
+	s.mux.HandleFunc("GET /cluster/status", s.handleStatus)
+	s.mux.HandleFunc("POST /cluster/observers/join", s.handleJoin)
+	s.mux.HandleFunc("POST /cluster/voters", s.handleAddVoter)
+	s.mux.HandleFunc("DELETE /cluster/voters/{id}", s.handleRemoveVoter)
+	s.srv = &http.Server{Addr: addr, Handler: s.mux}
 	return s
+}
+
+// RegisterMetadataRoutes adds broker and topic HTTP handlers to the server's mux.
+// Must be called before Start.
+func (s *AdminServer) RegisterMetadataRoutes(meta MetadataService) {
+	s.mux.HandleFunc("POST /brokers/register", meta.HandleRegisterBroker)
+	s.mux.HandleFunc("POST /brokers/{id}/shutdown", meta.HandleShutdownBroker)
+	s.mux.HandleFunc("GET /brokers", meta.HandleListBrokers)
+	s.mux.HandleFunc("GET /brokers/{id}", meta.HandleGetBroker)
+	s.mux.HandleFunc("POST /topics", meta.HandleCreateTopic)
+	s.mux.HandleFunc("GET /topics", meta.HandleListTopics)
+	s.mux.HandleFunc("DELETE /topics/{id}", meta.HandleDeleteTopic)
+}
+
+// MetadataService is the interface the AdminServer calls for metadata operations.
+// The controller package implements this by proposing entries to Raft.
+type MetadataService interface {
+	HandleRegisterBroker(w http.ResponseWriter, r *http.Request)
+	HandleShutdownBroker(w http.ResponseWriter, r *http.Request)
+	HandleListBrokers(w http.ResponseWriter, r *http.Request)
+	HandleGetBroker(w http.ResponseWriter, r *http.Request)
+	HandleCreateTopic(w http.ResponseWriter, r *http.Request)
+	HandleListTopics(w http.ResponseWriter, r *http.Request)
+	HandleDeleteTopic(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *AdminServer) Start() error {

@@ -1,5 +1,27 @@
 package metadata
 
+// BrokerStatus is the durable state written to the Raft log.
+// Liveness (alive/dead) is tracked separately in LivenessTracker (Phase 5) —
+// a broker can be status=active and alive=false (crashed) simultaneously.
+type BrokerStatus string
+
+const (
+	BrokerStatusActive       BrokerStatus = "active"
+	BrokerStatusShuttingDown BrokerStatus = "shutting_down"
+)
+
+// BrokerInfo is the durable record for a registered broker.
+// Epoch is the fencing token: only commands carrying the current epoch are accepted.
+// It is assigned and incremented exclusively inside applyRegisterBroker.
+type BrokerInfo struct {
+	BrokerID BrokerID
+	Host     string
+	Port     int32
+	RackID   string
+	Epoch    int64
+	Status   BrokerStatus
+}
+
 // TopicID is the canonical UUID-based key for a topic.
 // Distinct from Name so renaming a topic only touches the name index.
 type TopicID string
