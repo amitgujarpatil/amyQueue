@@ -150,7 +150,73 @@ func (b *Broker) tryRegister(ctx context.Context, target string, body map[string
 	return result.BrokerEpoch, "", nil
 }
 
-// BrokerIDForPartition is a placeholder type used by Phase 9 partition state cache.
+// StartHeartbeat starts a goroutine that sends POST /brokers/{id}/heartbeat to
+// the controller every heartbeatMs milliseconds. Stops when ctx is cancelled.
+// On StaleEpoch response the broker must re-register; this method returns so
+// the caller can restart the full startup sequence.
+func (b *Broker) StartHeartbeat(ctx context.Context, heartbeatMs int) {
+	go func() {
+		ticker := time.NewTicker(time.Duration(heartbeatMs) * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				stale, err := b.sendHeartbeat(ctx)
+				if err != nil {
+					// transient error — log and continue
+					_ = err
+				}
+				if stale {
+					// Epoch is stale — broker must re-register. Stop this heartbeat loop.
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (b *Broker) sendHeartbeat(ctx context.Context) (staleEpoch bool, err error) {
+	url := fmt.Sprintf("http://%s:%d/brokers/%s/heartbeat",
+		b.cfg.ControllerHost, b.cfg.HTTPPort, b.cfg.BrokerID)
+
+	body := map[string]any{
+		"broker_id":        b.cfg.BrokerID,
+		"epoch":            b.Epoch,
+		"metadata_version": 0, // placeholder until Phase 7 LEO tracking
+		"cluster_id":       b.cfg.ClusterID,
+		"token":            b.cfg.ClusterToken,
+	}
+	data, marshalErr := json.Marshal(body)
+	if marshalErr != nil {
+		return false, marshalErr
+	}
+
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if reqErr != nil {
+		return false, reqErr
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, doErr := http.DefaultClient.Do(req)
+	if doErr != nil {
+		return false, doErr
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("heartbeat returned %d", resp.StatusCode)
+	}
+
+	var hbResp struct {
+		StaleEpoch bool `json:"stale_epoch"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&hbResp)
+	return hbResp.StaleEpoch, nil
+}
+
+// PartitionAssignment is a placeholder type used by Phase 9 partition state cache.
 type PartitionAssignment struct {
 	Leader      metadata.BrokerID
 	ISR         []metadata.BrokerID

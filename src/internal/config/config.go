@@ -41,6 +41,10 @@ type Config struct {
 	// Persistence (Phase 4)
 	DataDir string // root directory for all durable state (default: "./data")
 
+	// Broker heartbeat (Phase 5)
+	BrokerHeartbeatMs      int // how often the broker sends a heartbeat (default 3000)
+	BrokerSessionTimeoutMs int // controller marks broker dead after this many ms without a heartbeat (default 30000)
+
 	// Cluster identity and authentication (Phase 2)
 	ClusterID             string // UUID identifying this cluster; required on controller and broker
 	ClusterToken          string // shared secret for broker↔controller auth (AMYQUEUE_CLUSTER_TOKEN)
@@ -151,6 +155,16 @@ func Load(envFile string) (*Config, error) {
 
 	// Persistence (Phase 4)
 	cfg.DataDir = getEnv("AMYQUEUE_DATA_DIR", "./data")
+
+	// Broker heartbeat (Phase 5)
+	cfg.BrokerHeartbeatMs, err = getEnvInt("AMYQUEUE_BROKER_HEARTBEAT_MS", 3000)
+	if err != nil {
+		return nil, fmt.Errorf("AMYQUEUE_BROKER_HEARTBEAT_MS: %w", err)
+	}
+	cfg.BrokerSessionTimeoutMs, err = getEnvInt("AMYQUEUE_BROKER_SESSION_TIMEOUT_MS", 30000)
+	if err != nil {
+		return nil, fmt.Errorf("AMYQUEUE_BROKER_SESSION_TIMEOUT_MS: %w", err)
+	}
 
 	// Cluster auth (Phase 2)
 	cfg.ClusterID = getEnv("AMYQUEUE_CLUSTER_ID", "")
