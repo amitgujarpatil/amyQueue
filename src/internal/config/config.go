@@ -48,6 +48,9 @@ type Config struct {
 	// Partition leadership (Phase 6)
 	UncleanLeaderElectionEnabled bool // allow electing a replica not in ISR (data loss; default false)
 
+	// Offset tracking (Phase 7)
+	ReplicaLagMaxOffset int // max LEO lag before replica is removed from ISR (default 4)
+
 	// Cluster identity and authentication (Phase 2)
 	ClusterID             string // UUID identifying this cluster; required on controller and broker
 	ClusterToken          string // shared secret for broker↔controller auth (AMYQUEUE_CLUSTER_TOKEN)
@@ -171,6 +174,12 @@ func Load(envFile string) (*Config, error) {
 
 	// Partition leadership (Phase 6)
 	cfg.UncleanLeaderElectionEnabled = getEnvBool("AMYQUEUE_UNCLEAN_LEADER_ELECTION", false)
+
+	// Offset tracking (Phase 7)
+	cfg.ReplicaLagMaxOffset, err = getEnvInt("AMYQUEUE_REPLICA_LAG_MAX_OFFSET", 4)
+	if err != nil {
+		return nil, fmt.Errorf("AMYQUEUE_REPLICA_LAG_MAX_OFFSET: %w", err)
+	}
 
 	// Cluster auth (Phase 2)
 	cfg.ClusterID = getEnv("AMYQUEUE_CLUSTER_ID", "")

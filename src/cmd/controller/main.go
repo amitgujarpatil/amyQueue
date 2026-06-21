@@ -141,10 +141,16 @@ func main() {
 	// Partition elector — triggered when the liveness sweep detects a dead broker.
 	elector := controller.NewPartitionElector(node, store, liveness, cfg.UncleanLeaderElectionEnabled, logger)
 
+	// ISR adjuster — runs on each sweep tick to shrink/expand ISR based on LEO lag.
+	isrAdjuster := controller.NewISRAdjuster(node, store, liveness, int64(cfg.ReplicaLagMaxOffset), logger)
+
 	// Start liveness sweep — detects dead brokers and fires onDead callback.
 	stopSweep := make(chan struct{})
 	sweepIntervalMs := cfg.BrokerHeartbeatMs * 2
-	liveness.StartSweep(sweepIntervalMs, stopSweep, elector.OnBrokerDead)
+	liveness.StartSweep(sweepIntervalMs, stopSweep, func(id metadata.BrokerID) {
+		elector.OnBrokerDead(id)
+		isrAdjuster.AdjustISR()
+	})
 	logger.Info("liveness sweep started",
 		"interval_ms", sweepIntervalMs,
 		"session_timeout_ms", cfg.BrokerSessionTimeoutMs)
