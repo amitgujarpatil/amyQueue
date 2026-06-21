@@ -45,6 +45,9 @@ type Config struct {
 	BrokerHeartbeatMs      int // how often the broker sends a heartbeat (default 3000)
 	BrokerSessionTimeoutMs int // controller marks broker dead after this many ms without a heartbeat (default 30000)
 
+	// Partition leadership (Phase 6)
+	UncleanLeaderElectionEnabled bool // allow electing a replica not in ISR (data loss; default false)
+
 	// Cluster identity and authentication (Phase 2)
 	ClusterID             string // UUID identifying this cluster; required on controller and broker
 	ClusterToken          string // shared secret for broker↔controller auth (AMYQUEUE_CLUSTER_TOKEN)
@@ -165,6 +168,9 @@ func Load(envFile string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("AMYQUEUE_BROKER_SESSION_TIMEOUT_MS: %w", err)
 	}
+
+	// Partition leadership (Phase 6)
+	cfg.UncleanLeaderElectionEnabled = getEnvBool("AMYQUEUE_UNCLEAN_LEADER_ELECTION", false)
 
 	// Cluster auth (Phase 2)
 	cfg.ClusterID = getEnv("AMYQUEUE_CLUSTER_ID", "")
