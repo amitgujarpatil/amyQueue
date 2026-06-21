@@ -181,10 +181,13 @@ func (b *Broker) sendHeartbeat(ctx context.Context) (staleEpoch bool, err error)
 	url := fmt.Sprintf("http://%s:%d/brokers/%s/heartbeat",
 		b.cfg.ControllerHost, b.cfg.HTTPPort, b.cfg.BrokerID)
 
+	// Phase 7: PartitionStateCache (populated in Phase 9) would provide real LEOs.
+	// For now send an empty offsets slice — controller treats missing replicas as LEO=0.
 	body := map[string]any{
 		"broker_id":        b.cfg.BrokerID,
 		"epoch":            b.Epoch,
-		"metadata_version": 0, // placeholder until Phase 7 LEO tracking
+		"metadata_version": 0,
+		"offsets":          []any{},
 		"cluster_id":       b.cfg.ClusterID,
 		"token":            b.cfg.ClusterToken,
 	}

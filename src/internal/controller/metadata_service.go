@@ -108,11 +108,12 @@ func (s *MetadataService) HandleRegisterBroker(w http.ResponseWriter, r *http.Re
 }
 
 type heartbeatRequest struct {
-	BrokerID        metadata.BrokerID `json:"broker_id"`
-	Epoch           int64             `json:"epoch"`
-	MetadataVersion int64             `json:"metadata_version"`
-	ClusterID       string            `json:"cluster_id"`
-	Token           string            `json:"token"`
+	BrokerID        metadata.BrokerID          `json:"broker_id"`
+	Epoch           int64                      `json:"epoch"`
+	MetadataVersion int64                      `json:"metadata_version"`
+	Offsets         []metadata.PartitionOffset `json:"offsets,omitempty"`
+	ClusterID       string                     `json:"cluster_id"`
+	Token           string                     `json:"token"`
 }
 
 func (s *MetadataService) HandleBrokerHeartbeat(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +150,7 @@ func (s *MetadataService) HandleBrokerHeartbeat(w http.ResponseWriter, r *http.R
 	}
 
 	if s.liveness != nil {
-		s.liveness.RecordHeartbeat(id)
+		s.liveness.RecordHeartbeat(id, req.Offsets)
 	}
 
 	writeJSON(w, http.StatusOK, metadata.HeartbeatResponse{
