@@ -87,7 +87,10 @@ type CreateTopicPayload struct {
 	ReplicationFactor int32
 	Internal          bool
 	Config            TopicConfig
-	Brokers           []BrokerID // live brokers available at proposal time
+	// Brokers is the list of active broker IDs at proposal time.
+	// Carried in the log entry so all state machine replicas compute identical
+	// assignments regardless of which brokers happen to be registered at apply time.
+	Brokers []BrokerID
 }
 
 type DeleteTopicPayload struct {

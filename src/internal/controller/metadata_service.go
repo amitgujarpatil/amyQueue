@@ -3,6 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/yourusername/amyqueue/src/internal/metadata"
@@ -257,6 +258,24 @@ func (s *MetadataService) HandleListTopics(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, map[string]any{"topics": s.store.ListTopics()})
 }
 
+func (s *MetadataService) HandleGetTopic(w http.ResponseWriter, r *http.Request) {
+	if err := s.authFromHeader(r); err != nil {
+		writeErr(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	id := metadata.TopicID(r.PathValue("id"))
+	t, ok := s.store.GetTopic(id)
+	if !ok {
+		// try by name as fallback
+		t, ok = s.store.GetTopicByName(string(id))
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "topic not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, t)
+}
+
 func (s *MetadataService) HandleDeleteTopic(w http.ResponseWriter, r *http.Request) {
 	if err := s.authFromHeader(r); err != nil {
 		writeErr(w, http.StatusUnauthorized, err.Error())
@@ -295,6 +314,95 @@ func (s *MetadataService) HandleDeleteTopic(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Partition handlers ---
+
+func (s *MetadataService) HandleListPartitions(w http.ResponseWriter, r *http.Request) {
+	if err := s.authFromHeader(r); err != nil {
+		writeErr(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	id := metadata.TopicID(r.PathValue("id"))
+	if _, ok := s.store.GetTopic(id); !ok {
+		writeErr(w, http.StatusNotFound, "topic not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"partitions": s.store.ListPartitions(id)})
+}
+
+func (s *MetadataService) HandleGetPartition(w http.ResponseWriter, r *http.Request) {
+	if err := s.authFromHeader(r); err != nil {
+		writeErr(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	id := metadata.TopicID(r.PathValue("id"))
+	pidStr := r.PathValue("pid")
+	var pid int32
+	if _, err := fmt.Sscanf(pidStr, "%d", &pid); err != nil {
+		writeErr(w, http.StatusBadRequest, "partition id must be an integer")
+		return
+	}
+	p, ok := s.store.GetPartition(metadata.PartitionKey{TopicID: id, PartitionID: pid})
+	if !ok {
+		writeErr(w, http.StatusNotFound, "partition not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// --- Cluster init handler ---
+
+type clusterInitRequest struct {
+	ClusterID string `json:"cluster_id"`
+	Token     string `json:"token"`
+}
+
+func (s *MetadataService) HandleClusterInit(w http.ResponseWriter, r *http.Request) {
+	var req clusterInitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.auth.ValidateRequest(req.ClusterID, req.Token); err != nil {
+		writeErr(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	if s.store.ClusterID() != "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"cluster_id":       s.store.ClusterID(),
+			"metadata_version": s.store.Version(),
+			"already_init":     true,
+		})
+		return
+	}
+
+	payload := metadata.ClusterInitPayload{ClusterID: req.ClusterID}
+	cmd, err := metadata.EncodeMetadataCommand(metadata.CmdTypeClusterInit, payload)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "encode command: "+err.Error())
+		return
+	}
+
+	if err := s.node.Propose(raft.CmdMetadata, cmd); err != nil {
+		var nle *raft.NotLeaderError
+		if errors.As(err, &nle) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error":       "not the leader",
+				"leader_id":   nle.LeaderID,
+				"leader_addr": nle.LeaderAddr,
+			})
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cluster_id":       s.store.ClusterID(),
+		"metadata_version": s.store.Version(),
+	})
 }
 
 // --- helpers ---

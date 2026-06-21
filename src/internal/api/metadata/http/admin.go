@@ -40,28 +40,50 @@ func NewAdminServer(addr string, svc raft.AdminService) *AdminServer {
 	return s
 }
 
-// RegisterMetadataRoutes adds broker and topic HTTP handlers to the server's mux.
+// RegisterMetadataRoutes adds broker, topic, and partition HTTP handlers.
 // Must be called before Start.
 func (s *AdminServer) RegisterMetadataRoutes(meta MetadataService) {
+	// Broker routes
 	s.mux.HandleFunc("POST /brokers/register", meta.HandleRegisterBroker)
 	s.mux.HandleFunc("POST /brokers/{id}/shutdown", meta.HandleShutdownBroker)
 	s.mux.HandleFunc("GET /brokers", meta.HandleListBrokers)
 	s.mux.HandleFunc("GET /brokers/{id}", meta.HandleGetBroker)
+
+	// Topic routes
 	s.mux.HandleFunc("POST /topics", meta.HandleCreateTopic)
 	s.mux.HandleFunc("GET /topics", meta.HandleListTopics)
+	s.mux.HandleFunc("GET /topics/{id}", meta.HandleGetTopic)
 	s.mux.HandleFunc("DELETE /topics/{id}", meta.HandleDeleteTopic)
+
+	// Partition routes
+	s.mux.HandleFunc("GET /topics/{id}/partitions", meta.HandleListPartitions)
+	s.mux.HandleFunc("GET /topics/{id}/partitions/{pid}", meta.HandleGetPartition)
+
+	// Cluster init
+	s.mux.HandleFunc("POST /cluster/init", meta.HandleClusterInit)
 }
 
 // MetadataService is the interface the AdminServer calls for metadata operations.
 // The controller package implements this by proposing entries to Raft.
 type MetadataService interface {
+	// Broker
 	HandleRegisterBroker(w http.ResponseWriter, r *http.Request)
 	HandleShutdownBroker(w http.ResponseWriter, r *http.Request)
 	HandleListBrokers(w http.ResponseWriter, r *http.Request)
 	HandleGetBroker(w http.ResponseWriter, r *http.Request)
+
+	// Topic
 	HandleCreateTopic(w http.ResponseWriter, r *http.Request)
 	HandleListTopics(w http.ResponseWriter, r *http.Request)
+	HandleGetTopic(w http.ResponseWriter, r *http.Request)
 	HandleDeleteTopic(w http.ResponseWriter, r *http.Request)
+
+	// Partition
+	HandleListPartitions(w http.ResponseWriter, r *http.Request)
+	HandleGetPartition(w http.ResponseWriter, r *http.Request)
+
+	// Cluster
+	HandleClusterInit(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *AdminServer) Start() error {
