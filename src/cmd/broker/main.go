@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yourusername/amyqueue/src/internal/broker"
+	brokeradmin "github.com/yourusername/amyqueue/src/internal/broker/admin"
 	"github.com/yourusername/amyqueue/src/internal/config"
 )
 
@@ -65,8 +66,17 @@ func main() {
 	b.StartHeartbeat(hbCtx, cfg.BrokerHeartbeatMs)
 	logger.Info("heartbeat goroutine started", "interval_ms", cfg.BrokerHeartbeatMs)
 
-	// TODO: Phase 9 — wait for LeaderAndISR push
-	// TODO: Phase 3+ — start accepting client connections
+	// Step 4 — start admin server to receive LeaderAndISR pushes from controller
+	adminSvc := brokeradmin.New(logger)
+	adminAddr := fmt.Sprintf(":%d", cfg.BrokerAdminPort)
+	adminSrv := brokeradmin.NewServer(adminAddr, adminSvc)
+	if err := adminSrv.Start(); err != nil {
+		logger.Error("failed to start broker admin server", "err", err)
+		os.Exit(1)
+	}
+	logger.Info("broker admin server started", "addr", adminAddr)
+
+	// TODO: Phase 3+ — start accepting client connections (producers/consumers)
 
 	// Wait for shutdown signal
 	sig := make(chan os.Signal, 1)
@@ -86,6 +96,7 @@ func main() {
 		logger.Info("controller acknowledged shutdown")
 	}
 
+	_ = adminSrv.Stop()
 	logger.Info("broker stopped")
 }
 

@@ -13,12 +13,25 @@ import (
 //
 // Lock ordering: Apply is called from applyCommitted with n.mu held.
 // The Store's own mutex is acquired after n.mu — never before.
+//
+// onPartitionUpdate fires AFTER a successful ApplyUpdatePartition. It is called
+// from within Apply (i.e. with n.mu held via applyCommitted), so it must not
+// block or acquire n.mu. The callback should post to a channel; a separate
+// goroutine reads from it and sends LeaderAndISR pushes.
 type MetadataStateMachine struct {
-	store Store
+	store             Store
+	onPartitionUpdate func(key PartitionKey) // optional; set via WithPartitionUpdateHook
 }
 
 func NewMetadataStateMachine(store Store) *MetadataStateMachine {
 	return &MetadataStateMachine{store: store}
+}
+
+// WithPartitionUpdateHook registers a callback invoked after each successful
+// ApplyUpdatePartition. Must be called before the node starts.
+func (sm *MetadataStateMachine) WithPartitionUpdateHook(fn func(key PartitionKey)) *MetadataStateMachine {
+	sm.onPartitionUpdate = fn
+	return sm
 }
 
 func (sm *MetadataStateMachine) Apply(entry raft.LogEntry) error {
@@ -54,7 +67,13 @@ func (sm *MetadataStateMachine) Apply(entry raft.LogEntry) error {
 		if err := json.Unmarshal(cmd.Payload, &p); err != nil {
 			return fmt.Errorf("metadata: update_partition decode: %w", err)
 		}
-		return sm.store.ApplyUpdatePartition(p)
+		if err := sm.store.ApplyUpdatePartition(p); err != nil {
+			return err
+		}
+		if sm.onPartitionUpdate != nil {
+			sm.onPartitionUpdate(p.Key)
+		}
+		return nil
 
 	case CmdTypeRegisterBroker:
 		var p RegisterBrokerPayload
