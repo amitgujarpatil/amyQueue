@@ -57,7 +57,13 @@ func main() {
 
 	// Build metadata store and state machine before starting the Raft node.
 	store := metadata.NewInMemoryStore()
-	sm := metadata.NewMetadataStateMachine(store)
+
+	// Phase 9: BrokerChannel for LeaderAndISR pushes.
+	brokerChannel := metadata.NewHTTPBrokerChannel()
+	pushCoord := controller.NewPushCoordinator(store, brokerChannel, logger)
+
+	sm := metadata.NewMetadataStateMachine(store).
+		WithPartitionUpdateHook(pushCoord.OnPartitionUpdated)
 
 	// Initialise durable storage when DataDir is configured.
 	var raftStorage raft.Storage

@@ -51,6 +51,9 @@ type Config struct {
 	// Offset tracking (Phase 7)
 	ReplicaLagMaxOffset int // max LEO lag before replica is removed from ISR (default 4)
 
+	// Controller-to-broker push (Phase 9)
+	BrokerAdminPort int // port for LeaderAndISR pushes from controller (default: GRPCPort+1)
+
 	// Cluster identity and authentication (Phase 2)
 	ClusterID             string // UUID identifying this cluster; required on controller and broker
 	ClusterToken          string // shared secret for broker↔controller auth (AMYQUEUE_CLUSTER_TOKEN)
@@ -179,6 +182,15 @@ func Load(envFile string) (*Config, error) {
 	cfg.ReplicaLagMaxOffset, err = getEnvInt("AMYQUEUE_REPLICA_LAG_MAX_OFFSET", 4)
 	if err != nil {
 		return nil, fmt.Errorf("AMYQUEUE_REPLICA_LAG_MAX_OFFSET: %w", err)
+	}
+
+	// Controller-to-broker push (Phase 9)
+	cfg.BrokerAdminPort, err = getEnvInt("AMYQUEUE_BROKER_ADMIN_PORT", 0) // 0 = default to GRPCPort+1
+	if err != nil {
+		return nil, fmt.Errorf("AMYQUEUE_BROKER_ADMIN_PORT: %w", err)
+	}
+	if cfg.BrokerAdminPort == 0 {
+		cfg.BrokerAdminPort = cfg.GRPCPort + 1
 	}
 
 	// Cluster auth (Phase 2)
