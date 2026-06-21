@@ -18,6 +18,7 @@ import (
 	"github.com/yourusername/amyqueue/src/internal/metadata"
 	"github.com/yourusername/amyqueue/src/internal/metrics"
 	"github.com/yourusername/amyqueue/src/internal/raft"
+	jsonstorage "github.com/yourusername/amyqueue/src/internal/raft/storage/json"
 	"github.com/yourusername/amyqueue/src/internal/raft/tcp"
 )
 
@@ -58,6 +59,18 @@ func main() {
 	store := metadata.NewInMemoryStore()
 	sm := metadata.NewMetadataStateMachine(store)
 
+	// Initialise durable storage when DataDir is configured.
+	var raftStorage raft.Storage
+	if cfg.DataDir != "" {
+		s, err := jsonstorage.New(cfg.DataDir, cfg.NodeID)
+		if err != nil {
+			logger.Error("failed to create raft storage", "err", err)
+			os.Exit(1)
+		}
+		raftStorage = s
+		logger.Info("durable storage enabled", "data_dir", cfg.DataDir)
+	}
+
 	node := raft.NewNode(raft.Config{
 		ID:                      cfg.NodeID,
 		Addr:                    selfRaftAddr,
@@ -67,7 +80,7 @@ func main() {
 		HeartbeatMs:             cfg.RaftHeartbeatMs,
 		AutoPromote:             cfg.AutoPromote,
 		AutoPromoteLagThreshold: cfg.AutoPromoteLagThreshold,
-	}, transport, logger).WithStateMachine(sm)
+	}, transport, logger).WithStateMachine(sm).WithStorage(raftStorage)
 
 	if err := node.Start(); err != nil {
 		logger.Error("failed to start raft node", "err", err)

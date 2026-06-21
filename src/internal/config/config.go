@@ -38,6 +38,9 @@ type Config struct {
 	AutoPromoteLagThreshold  int      // max entries behind leader to still be considered caught up
 	MetricsPort              int      // port for the Prometheus /metrics endpoint
 
+	// Persistence (Phase 4)
+	DataDir string // root directory for all durable state (default: "./data")
+
 	// Cluster identity and authentication (Phase 2)
 	ClusterID             string // UUID identifying this cluster; required on controller and broker
 	ClusterToken          string // shared secret for broker↔controller auth (AMYQUEUE_CLUSTER_TOKEN)
@@ -145,6 +148,9 @@ func Load(envFile string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("METRICS_PORT: %w", err)
 	}
+
+	// Persistence (Phase 4)
+	cfg.DataDir = getEnv("AMYQUEUE_DATA_DIR", "./data")
 
 	// Cluster auth (Phase 2)
 	cfg.ClusterID = getEnv("AMYQUEUE_CLUSTER_ID", "")
