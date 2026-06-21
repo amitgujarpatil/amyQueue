@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand"
 	"sync"
@@ -91,7 +92,8 @@ type Node struct {
 	leaderChanges     uint64
 	heartbeatFailures map[string]uint64 // peer addr → count
 
-	sm StateMachine // optional application state machine; set via WithStateMachine before Start
+	sm      StateMachine // optional; set via WithStateMachine before Start
+	storage Storage      // optional; set via WithStorage before Start
 
 	heartbeatC chan struct{}
 	stopC      chan struct{}
@@ -141,6 +143,13 @@ func (n *Node) WithStateMachine(sm StateMachine) *Node {
 	return n
 }
 
+// WithStorage enables durable persistence for hard state and the Raft log.
+// Must be called before Start. When nil the node is in-memory only.
+func (n *Node) WithStorage(s Storage) *Node {
+	n.storage = s
+	return n
+}
+
 // Propose encodes a command and appends it to the Raft log, blocking until the
 // entry is committed (and therefore applied by the state machine). Returns
 // *NotLeaderError when called on a non-leader so the caller can redirect.
@@ -156,7 +165,13 @@ func (n *Node) Propose(cmdType CommandType, data []byte) error {
 }
 
 // Start wires up the transport handlers and begins the Raft event loop.
+// When a Storage is configured, it loads hard state and replays the log
+// before accepting any RPCs.
 func (n *Node) Start() error {
+	if err := n.loadFromStorage(); err != nil {
+		return fmt.Errorf("raft: load from storage: %w", err)
+	}
+
 	handlers := Handlers{
 		HandleVoteRequest:   n.handleVoteRequest,
 		HandleAppendEntries: n.handleAppendEntries,
@@ -168,6 +183,44 @@ func (n *Node) Start() error {
 	}
 	go n.run()
 	n.logger.Info("raft node started", "mode", n.cfg.Mode, "peers", n.cfg.Peers)
+	return nil
+}
+
+// loadFromStorage loads hard state and replays the persisted log on startup.
+// No-op when n.storage is nil.
+func (n *Node) loadFromStorage() error {
+	if n.storage == nil {
+		return nil
+	}
+
+	hs, err := n.storage.LoadHardState()
+	if err != nil {
+		return fmt.Errorf("load hard state: %w", err)
+	}
+
+	entries, err := n.storage.LoadLogEntries()
+	if err != nil {
+		return fmt.Errorf("load log entries: %w", err)
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.currentTerm = hs.CurrentTerm
+	n.votedFor = hs.VotedFor
+
+	// Rebuild the in-memory log from persisted entries.
+	if len(entries) > 0 {
+		for _, e := range entries {
+			n.log.appendOne(e)
+		}
+		n.commitIndex = n.log.lastIndex()
+		n.lastApplied = 0
+		// Replay all committed entries through the state machine.
+		n.applyCommitted()
+		n.logger.Info("restored from storage",
+			"term", n.currentTerm, "log_entries", len(entries), "commit_index", n.commitIndex)
+	}
 	return nil
 }
 
@@ -373,6 +426,9 @@ func (n *Node) appendAndWaitCommit(cmdType CommandType, cmd []byte) error {
 	n.log.appendOne(entry)
 	n.mu.Unlock()
 
+	// Persist the entry outside n.mu to avoid holding the lock during I/O.
+	n.persistLogEntries([]LogEntry{entry})
+
 	// wait for commit with a timeout
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -482,6 +538,9 @@ func (n *Node) runCandidate() {
 	n.votedFor = n.cfg.ID
 	n.electionsStarted++
 	term := n.currentTerm
+	// Persist before sending vote requests — if we win without persisting and
+	// then crash, we could vote twice in the same term on restart.
+	n.persistHardState()
 	n.mu.Unlock()
 
 	n.logger.Info("starting election", "term", term)
@@ -739,6 +798,8 @@ func (n *Node) handleVoteRequest(req VoteRequest) VoteResponse {
 
 	if !alreadyVoted && logOK {
 		n.votedFor = req.CandidateID
+		// Persist BEFORE returning VoteGranted=true — safety invariant.
+		n.persistHardState()
 		resp.VoteGranted = true
 		resp.Term = n.currentTerm
 		n.logger.Info("granted vote", "to", req.CandidateID, "term", req.Term)
@@ -758,6 +819,7 @@ func (n *Node) handleAppendEntries(req AppendEntriesRequest) AppendEntriesRespon
 	if req.Term > n.currentTerm {
 		n.currentTerm = req.Term
 		n.votedFor = ""
+		n.persistHardState()
 	}
 	if req.LeaderID != n.leaderID {
 		n.leaderChanges++
@@ -886,6 +948,34 @@ func (n *Node) maybePromoteObservers() {
 				n.mu.Unlock()
 			}
 		}(m.ID, m.Addr)
+	}
+}
+
+// persistHardState writes the current term/votedFor/commitIndex to storage.
+// Must be called with n.mu held. Logs errors but does not panic — storage
+// failures are serious but should not crash the process immediately.
+func (n *Node) persistHardState() {
+	if n.storage == nil {
+		return
+	}
+	hs := HardState{
+		CurrentTerm: n.currentTerm,
+		VotedFor:    n.votedFor,
+		CommitIndex: n.commitIndex,
+	}
+	if err := n.storage.SaveHardState(hs); err != nil {
+		n.logger.Error("failed to persist hard state — SAFETY RISK if crash occurs", "err", err)
+	}
+}
+
+// persistLogEntries appends new entries to durable storage.
+// Must NOT be called with n.mu held (it acquires its own storage lock).
+func (n *Node) persistLogEntries(entries []LogEntry) {
+	if n.storage == nil || len(entries) == 0 {
+		return
+	}
+	if err := n.storage.AppendLogEntries(entries); err != nil {
+		n.logger.Error("failed to persist log entries", "count", len(entries), "err", err)
 	}
 }
 
